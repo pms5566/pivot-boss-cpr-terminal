@@ -237,24 +237,63 @@ class YahooSessionManager:
                             else:
                                 squeeze_direction = "⚡ High Leverage Coil"
                                 squeeze_dir_class = "text-amber-400 font-medium"
+                        chg_pct = round(float(item.get("change_percentage", 0) or 0), 2)
+                        high_24h = float(item.get("high_24h", 0) or 0)
+                        low_24h = float(item.get("low_24h", 0) or 0)
+                        index_p = float(item.get("index_price", last_p) or last_p)
+                        mark_p = float(item.get("mark_price", last_p) or last_p)
+                        basis_pct = round(((last_p - index_p) / index_p) * 100.0, 3) if index_p > 0 else 0.0
+                        annualized_funding = round(funding_pct * 3 * 365.0, 2)
+
+                        if chg_pct > 0 and funding_pct > 0.005:
+                            oi_signal = "🚀 Long Accumulation"
+                            oi_signal_desc = "Buyers aggressively opening leverage in uptrend"
+                            oi_signal_class = "text-emerald-400 bg-emerald-500/10 border-emerald-500/30"
+                        elif chg_pct > 0 and funding_pct <= 0.005:
+                            oi_signal = "⚡ Short Covering Rally"
+                            oi_signal_desc = "Shorts buying to cover / forced liquidation pump"
+                            oi_signal_class = "text-cyan-400 bg-cyan-500/10 border-cyan-500/30"
+                        elif chg_pct < 0 and funding_pct < 0.005:
+                            oi_signal = "💥 Short Building Flush"
+                            oi_signal_desc = "Aggressive bears building short exposure in downtrend"
+                            oi_signal_class = "text-rose-400 bg-rose-500/10 border-rose-500/30"
+                        elif chg_pct < 0 and funding_pct >= 0.005:
+                            oi_signal = "⚠️ Long Capitulation"
+                            oi_signal_desc = "Long liquidations flushing over-leveraged buyers"
+                            oi_signal_class = "text-amber-400 bg-amber-500/10 border-amber-500/30"
                         else:
-                            squeeze_direction = "🟢 Balanced Flow"
-                            squeeze_dir_class = "text-slate-400 font-normal"
+                            oi_signal = "🟢 Balanced Orderflow"
+                            oi_signal_desc = "Normal institutional rotation without extreme imbalance"
+                            oi_signal_class = "text-slate-300 bg-slate-500/10 border-slate-500/30"
 
                         deriv_map[base] = {
+                            "symbol": f"{base}-USD",
+                            "clean_symbol": base,
+                            "last_price": last_p,
+                            "change_pct": chg_pct,
+                            "high_24h": high_24h,
+                            "low_24h": low_24h,
+                            "mark_price": mark_p,
+                            "index_price": index_p,
+                            "basis_pct": basis_pct,
+                            "contracts_count": int(total_size),
                             "oi_usd": round(oi_usd, 2),
                             "oi_formatted": oi_fmt,
                             "vol_usd": round(vol_usd, 2),
                             "vol_formatted": vol_fmt,
                             "funding_pct": funding_pct,
                             "funding_formatted": f"{funding_pct:+.4f}%",
+                            "annualized_funding_pct": f"{annualized_funding:+.2f}%",
                             "funding_bias": funding_bias,
                             "squeeze_ratio": squeeze_ratio,
                             "squeeze_badge": squeeze_badge,
                             "squeeze_class": squeeze_class,
                             "squeeze_risk": squeeze_risk,
                             "squeeze_direction": squeeze_direction,
-                            "squeeze_dir_class": squeeze_dir_class
+                            "squeeze_dir_class": squeeze_dir_class,
+                            "oi_signal": oi_signal,
+                            "oi_signal_desc": oi_signal_desc,
+                            "oi_signal_class": oi_signal_class
                         }
                     except Exception:
                         continue
@@ -268,6 +307,52 @@ class YahooSessionManager:
         base = symbol.replace("-USD", "").replace("USDT", "").replace("USD", "").replace(".NS", "").replace("^", "").upper()
         data = self.get_crypto_derivatives_data()
         return data.get(base)
+
+    def get_crypto_oi_radar(self, search_sym="PEPE", watchlist_symbols=None):
+        deriv_map = self.get_crypto_derivatives_data()
+        valid_items = list(deriv_map.values())
+
+        # Leaderboards
+        sq_candidates = [x for x in valid_items if x["vol_usd"] >= 300000]
+        top_squeeze = sorted(sq_candidates, key=lambda x: x["squeeze_ratio"], reverse=True)[:8]
+
+        neg_candidates = [x for x in valid_items if x["vol_usd"] >= 150000]
+        top_neg_funding = sorted(neg_candidates, key=lambda x: x["funding_pct"])[:8]
+
+        pos_candidates = [x for x in valid_items if x["vol_usd"] >= 150000]
+        top_pos_funding = sorted(pos_candidates, key=lambda x: x["funding_pct"], reverse=True)[:8]
+
+        top_oi = sorted(valid_items, key=lambda x: x["oi_usd"], reverse=True)[:8]
+
+        # Search resolution
+        clean_search = (search_sym or "PEPE").replace("-USD", "").replace("USDT", "").replace("USD", "").strip().upper()
+        searched_coin = deriv_map.get(clean_search)
+        if not searched_coin and clean_search:
+            for k, v in deriv_map.items():
+                if k.startswith(clean_search):
+                    searched_coin = v
+                    break
+
+        # Tracked Watchlist
+        if not watchlist_symbols:
+            watchlist_symbols = ["BTC", "ETH", "SOL", "PEPE", "SUI", "DOGE", "NEAR", "INJ"]
+
+        watchlist_coins = []
+        for s in watchlist_symbols:
+            c_clean = s.replace("-USD", "").replace("USDT", "").replace("USD", "").strip().upper()
+            if c_clean in deriv_map:
+                watchlist_coins.append(deriv_map[c_clean])
+
+        return {
+            "searched_coin": searched_coin,
+            "watchlist_coins": watchlist_coins,
+            "leaderboards": {
+                "top_squeeze": top_squeeze,
+                "top_neg_funding": top_neg_funding,
+                "top_pos_funding": top_pos_funding,
+                "top_oi": top_oi
+            }
+        }
 
     def fetch_crypto_direct(self, symbol):
         """
@@ -736,6 +821,9 @@ DASHBOARD_HTML = """
                     <button onclick="setStrategy('inside_value')" id="btn-strat-inside" class="px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white">
                         🎯 Inside Value CPR
                     </button>
+                    <button onclick="setStrategy('oi_radar')" id="btn-strat-oi" class="px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white">
+                        ⚡ Crypto OI Radar
+                    </button>
                 </div>
 
                 <!-- Sub-Controls for Inside Value (Hidden when Virgin CPR is active) -->
@@ -806,7 +894,7 @@ DASHBOARD_HTML = """
         </div>
 
         <!-- Table View -->
-        <div class="glass rounded-2xl border border-navy-700/80 overflow-hidden shadow-2xl flex-1 flex flex-col">
+        <div id="cpr-table-card" class="glass rounded-2xl border border-navy-700/80 overflow-hidden shadow-2xl flex-1 flex flex-col">
             <div class="p-3.5 bg-navy-900/90 border-b border-navy-700 flex flex-wrap items-center justify-between gap-3">
                 <span class="text-xs font-bold uppercase tracking-wider text-rose-400 flex items-center gap-2" id="table-title">
                     🛡️ Verified Daily Virgin CPRs (Sorted by Nearest Distance to LTP)
@@ -837,6 +925,113 @@ DASHBOARD_HTML = """
                         </tr>
                     </tbody>
                 </table>
+            </div>
+        </div>
+
+        <!-- Crypto OI Radar View -->
+        <div id="oi-radar-view" class="hidden flex flex-col gap-6">
+            <!-- Search & Quick Chips Bar -->
+            <div class="glass p-4 rounded-2xl border border-navy-700/80 shadow-xl flex flex-col md:flex-row items-center justify-between gap-4">
+                <div class="flex items-center gap-3 w-full md:w-auto flex-1">
+                    <div class="text-xl">🔍</div>
+                    <div class="relative flex-1 max-w-md">
+                        <input type="text" id="oi-search-input" placeholder="Search coin (e.g. PEPE, SUI, BTC, SOL, NEAR, INJ, AERO...)" 
+                               class="w-full bg-navy-950 border border-navy-700 text-white text-xs rounded-xl px-4 py-2.5 focus:outline-none focus:border-cyan-400 font-mono shadow-inner uppercase"
+                               onkeydown="if(event.key==='Enter') searchOICoin()">
+                    </div>
+                    <button onclick="searchOICoin()" class="px-4 py-2.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-black font-bold text-xs transition shadow active:scale-95">
+                        Inspect OI
+                    </button>
+                </div>
+                <!-- Quick Preset Chips -->
+                <div class="flex flex-wrap items-center gap-1.5 text-xs font-mono">
+                    <span class="text-slate-400 text-[11px] font-sans mr-1">Quick:</span>
+                    <button onclick="searchOICoin('BTC')" class="px-2 py-1 rounded-lg bg-navy-950 hover:bg-navy-800 border border-navy-700 text-slate-300">BTC</button>
+                    <button onclick="searchOICoin('ETH')" class="px-2 py-1 rounded-lg bg-navy-950 hover:bg-navy-800 border border-navy-700 text-slate-300">ETH</button>
+                    <button onclick="searchOICoin('SOL')" class="px-2 py-1 rounded-lg bg-navy-950 hover:bg-navy-800 border border-navy-700 text-slate-300">SOL</button>
+                    <button onclick="searchOICoin('PEPE')" class="px-2 py-1 rounded-lg bg-navy-950 hover:bg-navy-800 border border-navy-700 text-cyan-400 font-bold">PEPE</button>
+                    <button onclick="searchOICoin('SUI')" class="px-2 py-1 rounded-lg bg-navy-950 hover:bg-navy-800 border border-navy-700 text-slate-300">SUI</button>
+                    <button onclick="searchOICoin('INJ')" class="px-2 py-1 rounded-lg bg-navy-950 hover:bg-navy-800 border border-navy-700 text-slate-300">INJ</button>
+                    <button onclick="searchOICoin('DOGE')" class="px-2 py-1 rounded-lg bg-navy-950 hover:bg-navy-800 border border-navy-700 text-slate-300">DOGE</button>
+                    <button onclick="searchOICoin('NEAR')" class="px-2 py-1 rounded-lg bg-navy-950 hover:bg-navy-800 border border-navy-700 text-slate-300">NEAR</button>
+                    <button onclick="searchOICoin('AERO')" class="px-2 py-1 rounded-lg bg-navy-950 hover:bg-navy-800 border border-navy-700 text-rose-400">AERO</button>
+                </div>
+            </div>
+
+            <!-- Searched Coin Deep Dive Hero Card -->
+            <div id="oi-hero-card" class="glass rounded-2xl border border-cyan-500/30 overflow-hidden shadow-2xl p-5">
+                <!-- Rendered dynamically -->
+            </div>
+
+            <!-- My Pinned OI Watchlist Card -->
+            <div class="glass rounded-2xl border border-navy-700/80 overflow-hidden shadow-2xl flex flex-col">
+                <div class="p-3.5 bg-navy-900/90 border-b border-navy-700 flex flex-wrap items-center justify-between gap-3">
+                    <span class="text-xs font-bold uppercase tracking-wider text-cyan-400 flex items-center gap-2">
+                        📌 My Pinned OI Watchlist (Auto-Saved)
+                    </span>
+                    <span class="text-[11px] text-slate-400 font-sans">120s Live Auto-Refresh • Saved in your browser</span>
+                </div>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left text-xs border-collapse">
+                        <thead class="bg-navy-950/90 border-b border-navy-700 text-slate-400 uppercase text-[11px]">
+                            <tr>
+                                <th class="py-3 px-4">Coin Pair</th>
+                                <th class="py-3 px-4">Price & 24h Chg</th>
+                                <th class="py-3 px-4">Open Interest (USD)</th>
+                                <th class="py-3 px-4">24h Volume (USD)</th>
+                                <th class="py-3 px-4">Squeeze Ratio & Risk</th>
+                                <th class="py-3 px-4">8h Funding Rate</th>
+                                <th class="py-3 px-4">Smart Money Signal</th>
+                                <th class="py-3 px-4 text-center">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="oi-watchlist-body" class="divide-y divide-navy-700/50 font-mono">
+                            <!-- Rendered dynamically -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Institutional Extremes Leaderboards (3-Column Grid) -->
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-6" id="oi-leaderboards">
+                <!-- Top Squeeze Ratios Card -->
+                <div class="glass rounded-2xl border border-rose-500/30 overflow-hidden shadow-2xl flex flex-col">
+                    <div class="p-3.5 bg-navy-900/90 border-b border-navy-700 flex items-center justify-between">
+                        <span class="text-xs font-bold text-rose-400 flex items-center gap-1.5">
+                            ⚡ Top Squeeze Ratios (OI / 24h Vol)
+                        </span>
+                        <span class="text-[10px] bg-rose-500/20 text-rose-300 px-2 py-0.5 rounded font-mono">Min $300k Vol</span>
+                    </div>
+                    <div id="lb-squeeze" class="p-3 space-y-2 divide-y divide-navy-800/80 font-mono text-xs">
+                        <!-- Injected -->
+                    </div>
+                </div>
+
+                <!-- Most Negative Funding Card -->
+                <div class="glass rounded-2xl border border-emerald-500/30 overflow-hidden shadow-2xl flex flex-col">
+                    <div class="p-3.5 bg-navy-900/90 border-b border-navy-700 flex items-center justify-between">
+                        <span class="text-xs font-bold text-emerald-400 flex items-center gap-1.5">
+                            🚀 Short Squeeze Candidates (Negative Funding)
+                        </span>
+                        <span class="text-[10px] bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded font-mono">Shorts Paying</span>
+                    </div>
+                    <div id="lb-neg-funding" class="p-3 space-y-2 divide-y divide-navy-800/80 font-mono text-xs">
+                        <!-- Injected -->
+                    </div>
+                </div>
+
+                <!-- Open Interest Giants Card -->
+                <div class="glass rounded-2xl border border-cyan-500/30 overflow-hidden shadow-2xl flex flex-col">
+                    <div class="p-3.5 bg-navy-900/90 border-b border-navy-700 flex items-center justify-between">
+                        <span class="text-xs font-bold text-cyan-400 flex items-center gap-1.5">
+                            👑 Largest Open Interest Giants
+                        </span>
+                        <span class="text-[10px] bg-cyan-500/20 text-cyan-300 px-2 py-0.5 rounded font-mono">Market Leaders</span>
+                    </div>
+                    <div id="lb-top-oi" class="p-3 space-y-2 divide-y divide-navy-800/80 font-mono text-xs">
+                        <!-- Injected -->
+                    </div>
+                </div>
             </div>
         </div>
 
@@ -1036,10 +1231,285 @@ DASHBOARD_HTML = """
             renderTable();
         }
 
+        let currentOISearch = 'PEPE';
+        let oiRadarData = null;
+
+        function getStoredOIWatchlist() {
+            try {
+                const raw = localStorage.getItem('tracked_oi_coins');
+                if (raw) return JSON.parse(raw);
+            } catch (e) {}
+            return ['BTC', 'ETH', 'SOL', 'PEPE', 'SUI', 'INJ', 'DOGE', 'NEAR', 'AERO'];
+        }
+
+        function saveStoredOIWatchlist(list) {
+            try {
+                localStorage.setItem('tracked_oi_coins', JSON.stringify(list));
+            } catch (e) {}
+        }
+
+        async function loadOIRadar() {
+            const heroEl = document.getElementById('oi-hero-card');
+            if (heroEl) {
+                heroEl.innerHTML = `
+                    <div class="py-12 text-center text-slate-400 font-sans">
+                        <div class="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-cyan-400 mb-3"></div>
+                        <p>Loading real-time institutional derivatives metrics & leaderboards...</p>
+                    </div>
+                `;
+            }
+            const watchlist = getStoredOIWatchlist();
+            try {
+                const res = await fetch(`/api/crypto/oi?search=${encodeURIComponent(currentOISearch)}&watchlist=${encodeURIComponent(watchlist.join(','))}`);
+                const data = await res.json();
+                oiRadarData = data;
+                renderOIHero(data.searched_coin);
+                renderOIWatchlist(data.watchlist_coins);
+                renderOILeaderboards(data.leaderboards);
+            } catch (e) {
+                if (heroEl) heroEl.innerHTML = `<div class="py-8 text-center text-rose-400">Failed to load OI data. Please retry.</div>`;
+            }
+        }
+
+        function searchOICoin(sym) {
+            const input = document.getElementById('oi-search-input');
+            const target = (sym || (input ? input.value : '') || 'PEPE').trim().toUpperCase();
+            if (!target) return;
+            currentOISearch = target;
+            if (input) input.value = target;
+            loadOIRadar();
+        }
+
+        function togglePinCoin(sym) {
+            let list = getStoredOIWatchlist();
+            const clean = sym.toUpperCase();
+            if (list.includes(clean)) {
+                list = list.filter(s => s !== clean);
+            } else {
+                list.push(clean);
+            }
+            saveStoredOIWatchlist(list);
+            loadOIRadar();
+        }
+
+        function renderOIHero(coin) {
+            const heroEl = document.getElementById('oi-hero-card');
+            if (!heroEl) return;
+            if (!coin) {
+                heroEl.innerHTML = `
+                    <div class="py-8 text-center text-slate-400">
+                        <div class="text-2xl mb-1">🔍</div>
+                        <p class="text-sm font-semibold text-slate-200">No futures contract found for "${currentOISearch}".</p>
+                        <p class="text-xs text-slate-500 mt-1">Try BTC, ETH, SOL, PEPE, SUI, DOGE, NEAR, AERO...</p>
+                    </div>
+                `;
+                return;
+            }
+
+            const list = getStoredOIWatchlist();
+            const isPinned = list.includes(coin.clean_symbol);
+            const chgColor = coin.change_pct >= 0 ? 'text-emerald-400' : 'text-rose-400';
+            const chgSign = coin.change_pct >= 0 ? '+' : '';
+            const sqRatio = coin.squeeze_ratio || 0;
+            const sqBarPct = Math.min(100, Math.round((sqRatio / 5.0) * 100));
+
+            heroEl.innerHTML = `
+                <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-navy-700/80">
+                    <div class="flex items-center gap-3">
+                        <div class="w-11 h-11 rounded-xl bg-gradient-to-tr from-cyan-500 to-blue-600 flex items-center justify-center font-bold text-black text-base font-mono shadow-lg shadow-cyan-500/20">
+                            ${coin.clean_symbol.slice(0, 3)}
+                        </div>
+                        <div>
+                            <div class="flex items-center gap-2">
+                                <h2 class="text-lg font-bold text-white font-mono tracking-tight">${coin.clean_symbol} / USDT</h2>
+                                <span class="px-2 py-0.5 rounded text-[10px] font-semibold border ${coin.squeeze_class} font-sans">
+                                    ${coin.squeeze_badge}
+                                </span>
+                                <span class="px-2 py-0.5 rounded text-[10px] font-semibold border ${coin.oi_signal_class} font-sans">
+                                    ${coin.oi_signal}
+                                </span>
+                            </div>
+                            <div class="flex items-center gap-3 text-xs mt-0.5 font-mono">
+                                <span class="text-slate-100 font-bold">$${coin.last_price.toLocaleString()}</span>
+                                <span class="${chgColor} font-semibold">${chgSign}${coin.change_pct}% (24h)</span>
+                                <span class="text-slate-500 text-[11px] font-sans">Mark: $${coin.mark_price.toLocaleString()} • Index: $${coin.index_price.toLocaleString()}</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <button onclick="togglePinCoin('${coin.clean_symbol}')" class="px-3.5 py-1.5 rounded-xl border ${isPinned ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40' : 'bg-navy-950 text-slate-300 border-navy-700 hover:text-white'} text-xs font-semibold font-sans transition flex items-center gap-1.5 shadow">
+                            <span>${isPinned ? '📌 Pinned' : '+ Pin to Watchlist'}</span>
+                        </button>
+                        <a href="https://www.tradingview.com/chart/?symbol=BINANCE:${coin.clean_symbol}USDT" target="_blank" rel="noopener" class="px-3 py-1.5 rounded-xl bg-navy-800 hover:bg-sky-600 hover:text-white text-slate-300 font-sans text-xs transition border border-navy-700 shadow font-semibold">
+                            TV ↗
+                        </a>
+                    </div>
+                </div>
+
+                <!-- 6 Metric Cards Grid -->
+                <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 pt-4 text-xs font-mono">
+                    <div class="p-3 rounded-xl bg-navy-950/70 border border-navy-800">
+                        <div class="text-[11px] text-slate-400 font-sans">Open Interest (USD)</div>
+                        <div class="text-cyan-400 font-bold text-sm mt-1">${coin.oi_formatted}</div>
+                        <div class="text-[10px] text-slate-500 font-sans mt-0.5">${coin.contracts_count.toLocaleString()} contracts</div>
+                    </div>
+
+                    <div class="p-3 rounded-xl bg-navy-950/70 border border-navy-800">
+                        <div class="text-[11px] text-slate-400 font-sans">24h Trading Vol</div>
+                        <div class="text-slate-100 font-bold text-sm mt-1">${coin.vol_formatted}</div>
+                        <div class="text-[10px] text-slate-500 font-sans mt-0.5">USD Turnover</div>
+                    </div>
+
+                    <div class="p-3 rounded-xl bg-navy-950/70 border border-navy-800">
+                        <div class="text-[11px] text-slate-400 font-sans">Squeeze Ratio</div>
+                        <div class="text-amber-400 font-bold text-sm mt-1">${coin.squeeze_ratio}x</div>
+                        <div class="w-full bg-navy-900 rounded-full h-1.5 mt-1 overflow-hidden">
+                            <div class="bg-gradient-to-r from-emerald-400 via-amber-400 to-rose-500 h-1.5 rounded-full" style="width: ${sqBarPct}%"></div>
+                        </div>
+                    </div>
+
+                    <div class="p-3 rounded-xl bg-navy-950/70 border border-navy-800">
+                        <div class="text-[11px] text-slate-400 font-sans">8h Funding Rate</div>
+                        <div class="font-bold text-sm mt-1 ${coin.funding_pct > 0 ? 'text-emerald-400' : (coin.funding_pct < 0 ? 'text-rose-400' : 'text-slate-300')}">${coin.funding_formatted}</div>
+                        <div class="text-[10px] text-slate-400 font-sans mt-0.5">${coin.funding_bias} (${coin.annualized_funding_pct} APR)</div>
+                    </div>
+
+                    <div class="p-3 rounded-xl bg-navy-950/70 border border-navy-800">
+                        <div class="text-[11px] text-slate-400 font-sans">Futures Basis</div>
+                        <div class="text-purple-300 font-bold text-sm mt-1">${coin.basis_pct > 0 ? '+' : ''}${coin.basis_pct}%</div>
+                        <div class="text-[10px] text-slate-500 font-sans mt-0.5">${coin.basis_pct >= 0 ? 'Futures Premium' : 'Futures Discount'}</div>
+                    </div>
+
+                    <div class="p-3 rounded-xl bg-navy-950/70 border border-navy-800">
+                        <div class="text-[11px] text-slate-400 font-sans">Direction Risk</div>
+                        <div class="text-xs font-bold mt-1 ${coin.squeeze_dir_class}">${coin.squeeze_direction}</div>
+                        <div class="text-[10px] text-slate-500 font-sans mt-0.5 leading-tight">${coin.oi_signal_desc}</div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderOIWatchlist(coins) {
+            const tbody = document.getElementById('oi-watchlist-body');
+            if (!tbody) return;
+            if (!coins || coins.length === 0) {
+                tbody.innerHTML = `
+                    <tr>
+                        <td colspan="8" class="text-center py-10 text-slate-400 font-sans">
+                            No coins pinned in your watchlist yet. Search a coin above and click "+ Pin to Watchlist".
+                        </td>
+                    </tr>
+                `;
+                return;
+            }
+
+            tbody.innerHTML = coins.map(coin => {
+                const chgColor = coin.change_pct >= 0 ? 'text-emerald-400' : 'text-rose-400';
+                const chgSign = coin.change_pct >= 0 ? '+' : '';
+                return `
+                    <tr class="hover:bg-navy-800/80 transition group cursor-pointer" onclick="searchOICoin('${coin.clean_symbol}')">
+                        <td class="py-3 px-4">
+                            <div class="font-bold text-white text-sm">${coin.clean_symbol}</div>
+                            <div class="text-[10px] text-slate-500 font-sans">${coin.symbol}</div>
+                        </td>
+                        <td class="py-3 px-4">
+                            <div class="font-bold text-slate-100">$${coin.last_price.toLocaleString()}</div>
+                            <div class="${chgColor} text-[11px] font-sans font-medium">${chgSign}${coin.change_pct}%</div>
+                        </td>
+                        <td class="py-3 px-4">
+                            <div class="text-cyan-400 font-bold">${coin.oi_formatted}</div>
+                            <div class="text-[10px] text-slate-400 font-sans">${coin.contracts_count.toLocaleString()} cntr</div>
+                        </td>
+                        <td class="py-3 px-4">
+                            <div class="text-slate-200 font-semibold">${coin.vol_formatted}</div>
+                        </td>
+                        <td class="py-3 px-4">
+                            <div><span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold border ${coin.squeeze_class} font-sans">${coin.squeeze_badge} (${coin.squeeze_ratio}x)</span></div>
+                            <div class="text-[10px] ${coin.squeeze_dir_class} font-sans mt-0.5">${coin.squeeze_direction}</div>
+                        </td>
+                        <td class="py-3 px-4">
+                            <div class="font-semibold ${coin.funding_pct > 0 ? 'text-emerald-400' : (coin.funding_pct < 0 ? 'text-rose-400' : 'text-slate-300')}">${coin.funding_formatted}</div>
+                            <div class="text-[10px] text-slate-500 font-sans">${coin.funding_bias}</div>
+                        </td>
+                        <td class="py-3 px-4">
+                            <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold border ${coin.oi_signal_class} font-sans">
+                                ${coin.oi_signal}
+                            </span>
+                        </td>
+                        <td class="py-3 px-4 text-center" onclick="event.stopPropagation()">
+                            <div class="flex items-center justify-center gap-1.5">
+                                <a href="https://www.tradingview.com/chart/?symbol=BINANCE:${coin.clean_symbol}USDT" target="_blank" rel="noopener" class="px-2 py-1 rounded-lg bg-navy-800 hover:bg-sky-600 hover:text-white text-slate-300 font-sans text-xs transition border border-navy-700 shadow font-semibold">
+                                    TV ↗
+                                </a>
+                                <button onclick="togglePinCoin('${coin.clean_symbol}')" class="px-2 py-1 rounded-lg bg-navy-800 hover:bg-rose-500 hover:text-white text-slate-400 font-sans text-xs transition border border-navy-700 shadow" title="Remove from watchlist">
+                                    ✕
+                                </button>
+                            </div>
+                        </td>
+                    </tr>
+                `;
+            }).join('');
+        }
+
+        function renderOILeaderboards(lb) {
+            if (!lb) return;
+
+            const elSq = document.getElementById('lb-squeeze');
+            if (elSq) {
+                elSq.innerHTML = (lb.top_squeeze || []).map(coin => `
+                    <div class="flex items-center justify-between py-1.5 cursor-pointer hover:bg-navy-800/50 px-1 rounded transition" onclick="searchOICoin('${coin.clean_symbol}')">
+                        <div>
+                            <span class="text-white font-bold">${coin.clean_symbol}</span>
+                            <span class="text-[10px] text-slate-400 font-sans ml-1">${coin.vol_formatted} Vol</span>
+                        </div>
+                        <div class="text-right">
+                            <span class="text-rose-400 font-bold">${coin.squeeze_ratio}x</span>
+                            <div class="text-[10px] text-cyan-400 font-sans">OI: ${coin.oi_formatted}</div>
+                        </div>
+                    </div>
+                `).join('');
+            }
+
+            const elNeg = document.getElementById('lb-neg-funding');
+            if (elNeg) {
+                elNeg.innerHTML = (lb.top_neg_funding || []).map(coin => `
+                    <div class="flex items-center justify-between py-1.5 cursor-pointer hover:bg-navy-800/50 px-1 rounded transition" onclick="searchOICoin('${coin.clean_symbol}')">
+                        <div>
+                            <span class="text-white font-bold">${coin.clean_symbol}</span>
+                            <span class="text-[10px] text-slate-400 font-sans ml-1">${coin.squeeze_ratio}x sq</span>
+                        </div>
+                        <div class="text-right">
+                            <span class="text-emerald-400 font-bold">${coin.funding_formatted}</span>
+                            <div class="text-[10px] text-slate-400 font-sans">OI: ${coin.oi_formatted}</div>
+                        </div>
+                    </div>
+                `).join('');
+            }
+
+            const elTop = document.getElementById('lb-top-oi');
+            if (elTop) {
+                elTop.innerHTML = (lb.top_oi || []).map(coin => `
+                    <div class="flex items-center justify-between py-1.5 cursor-pointer hover:bg-navy-800/50 px-1 rounded transition" onclick="searchOICoin('${coin.clean_symbol}')">
+                        <div>
+                            <span class="text-white font-bold">${coin.clean_symbol}</span>
+                            <span class="text-[10px] text-slate-400 font-sans ml-1">${coin.funding_formatted}</span>
+                        </div>
+                        <div class="text-right">
+                            <span class="text-cyan-400 font-bold">${coin.oi_formatted}</span>
+                            <div class="text-[10px] text-slate-400 font-sans">Vol: ${coin.vol_formatted}</div>
+                        </div>
+                    </div>
+                `).join('');
+            }
+        }
+
         function updateUIState() {
             const btnVirgin = document.getElementById('btn-strat-virgin');
             const btnInside = document.getElementById('btn-strat-inside');
+            const btnOi = document.getElementById('btn-strat-oi');
             const ivControls = document.getElementById('inside-value-controls');
+            const cprTable = document.getElementById('cpr-table-card');
+            const oiRadarView = document.getElementById('oi-radar-view');
             const badge = document.getElementById('header-mode-badge');
             const bannerCard = document.getElementById('banner-card');
             const bannerTitle = document.getElementById('banner-title');
@@ -1048,75 +1518,101 @@ DASHBOARD_HTML = """
             const tableTitle = document.getElementById('table-title');
             const logo = document.getElementById('logo-letter');
 
-            if (currentStrategy === 'virgin_cpr') {
-                btnVirgin.className = 'px-3 py-1.5 rounded-lg transition-all text-white bg-rose-600 font-bold shadow';
+            if (currentStrategy === 'oi_radar') {
+                btnOi.className = 'px-3 py-1.5 rounded-lg transition-all text-black bg-cyan-400 font-bold shadow';
+                btnVirgin.className = 'px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white';
                 btnInside.className = 'px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white';
                 ivControls.classList.add('hidden');
-                
-                logo.innerText = 'V';
-                badge.innerText = 'DAILY VIRGIN CPR (≤10D)';
-                badge.className = 'px-2 py-0.5 rounded text-[10px] bg-rose-500/20 text-rose-300 font-mono font-medium border border-rose-500/30';
+                cprTable.classList.add('hidden');
+                oiRadarView.classList.remove('hidden');
 
-                bannerCard.className = 'p-4 rounded-2xl bg-gradient-to-r from-navy-900 via-navy-900 to-navy-950 border border-rose-500/30 flex flex-col md:flex-row items-start md:items-center justify-between gap-4 shadow-lg';
-                bannerIcon.innerText = '🛡️';
-                bannerTitle.className = 'text-sm font-bold text-rose-300';
-                bannerTitle.innerText = 'Daily Virgin CPR (Untested Liquidity Magnets ≤ 10 Days Old):';
-                bannerDesc.innerHTML = 'Price has <strong>never touched these CPR pivot ranges</strong> since formation! Untested CPRs below price act as <strong>Major Demand/Support</strong>, and untested CPRs above price act as <strong>Major Supply/Resistance</strong>.';
-                tableTitle.innerText = '🛡️ Verified Daily Virgin CPRs (Sorted by Nearest Distance to LTP)';
-                tableTitle.className = 'text-xs font-bold uppercase tracking-wider text-rose-400 flex items-center gap-2';
+                logo.innerText = 'OI';
+                badge.innerText = 'CRYPTO OI RADAR (1,000+ FUTURES)';
+                badge.className = 'px-2 py-0.5 rounded text-[10px] bg-cyan-500/20 text-cyan-300 font-mono font-medium border border-cyan-500/30';
+
+                bannerCard.className = 'p-4 rounded-2xl bg-gradient-to-r from-cyan-950/40 via-navy-900 to-navy-900 border border-cyan-500/30 flex flex-col md:flex-row items-start md:items-center justify-between gap-4 shadow-lg';
+                bannerIcon.innerText = '⚡';
+                bannerTitle.className = 'text-sm font-bold text-cyan-300';
+                bannerTitle.innerText = 'Institutional Crypto Open Interest (OI) & Squeeze Radar:';
+                bannerDesc.innerHTML = 'Track live open interest capital, 24h leverage squeeze ratios, and 8h funding rates across 1,000+ liquid futures pairs. Search any coin or pin to your custom watchlist.';
+                document.getElementById('coils-total').innerText = '1,024+';
+                document.getElementById('coils-total').className = 'text-cyan-400 font-bold text-base';
             } else {
-                btnInside.className = 'px-3 py-1.5 rounded-lg transition-all text-black bg-amber-400 font-bold shadow';
-                btnVirgin.className = 'px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white';
-                ivControls.classList.remove('hidden');
+                cprTable.classList.remove('hidden');
+                oiRadarView.classList.add('hidden');
+                btnOi.className = 'px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white';
+                document.getElementById('coils-total').className = currentStrategy === 'virgin_cpr' ? 'text-rose-400 font-bold text-base' : 'text-amber-400 font-bold text-base';
 
-                // Timeframe buttons
-                const btnDaily = document.getElementById('btn-tf-daily');
-                const btnMonthly = document.getElementById('btn-tf-monthly');
-                if (currentTimeframe === 'daily') {
-                    btnDaily.className = 'px-3 py-1.5 rounded-lg transition-all text-black bg-amber-400 font-bold shadow';
-                    btnMonthly.className = 'px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white';
-                    logo.innerText = 'D';
-                } else {
-                    btnMonthly.className = 'px-3 py-1.5 rounded-lg transition-all text-black bg-amber-400 font-bold shadow';
-                    btnDaily.className = 'px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white';
-                    logo.innerText = 'M';
-                }
-
-                // Mode buttons
-                const btnDev = document.getElementById('btn-mode-dev');
-                const btnAct = document.getElementById('btn-mode-act');
-                if (currentMode === 'developing') {
-                    btnDev.className = 'px-3 py-1.5 rounded-lg transition-all text-white bg-purple-600 font-bold shadow';
-                    btnAct.className = 'px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white';
-                } else {
-                    btnAct.className = 'px-3 py-1.5 rounded-lg transition-all text-white bg-emerald-600 font-bold shadow';
-                    btnDev.className = 'px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white';
-                }
-
-                const tfName = currentTimeframe === 'daily' ? 'DAILY' : 'MONTHLY';
-                const modeName = currentMode === 'developing' ? 'DEVELOPING (NEXT)' : 'ACTIVE (CURRENT)';
-                badge.innerText = `${tfName} • ${modeName}`;
-                badge.className = 'px-2 py-0.5 rounded text-[10px] bg-amber-500/20 text-amber-300 font-mono font-medium border border-amber-500/30';
-
-                bannerCard.className = 'p-4 rounded-2xl bg-gradient-to-r from-amber-950/40 via-navy-900 to-navy-900 border border-amber-500/30 flex flex-col md:flex-row items-start md:items-center justify-between gap-4 shadow-lg';
-                bannerIcon.innerText = '🎯';
-                bannerTitle.className = 'text-sm font-bold text-amber-300';
-                bannerTitle.innerText = `${tfName} ${modeName} Inside Value CPR Setup:`;
-                bannerDesc.innerHTML = 'These assets are in <strong>verified volatility compression</strong>. Trade breakouts above PMH/Today High or breakdowns below PML/Today Low.';
-                tableTitle.innerText = `🔥 Verified ${tfName} ${modeName} Inside Value Setups`;
-                tableTitle.className = 'text-xs font-bold uppercase tracking-wider text-amber-400 flex items-center gap-2';
-            }
-
-            // Crypto market banner adjustments
-            if (currentMarket === 'crypto_all') {
                 if (currentStrategy === 'virgin_cpr') {
-                    tableTitle.innerText = '🛡️ Verified Daily Virgin CPRs + Derivatives Squeeze Risk (200+ Liquid Coins)';
-                    bannerDesc.innerHTML = 'Price has <strong>never touched these CPR pivot ranges</strong> since formation! Track <strong>Open Interest, 24h Squeeze Ratio, and Funding Rates</strong> to catch high-conviction breakout bounces.';
+                    btnVirgin.className = 'px-3 py-1.5 rounded-lg transition-all text-white bg-rose-600 font-bold shadow';
+                    btnInside.className = 'px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white';
+                    ivControls.classList.add('hidden');
+                    
+                    logo.innerText = 'V';
+                    badge.innerText = 'DAILY VIRGIN CPR (≤10D)';
+                    badge.className = 'px-2 py-0.5 rounded text-[10px] bg-rose-500/20 text-rose-300 font-mono font-medium border border-rose-500/30';
+
+                    bannerCard.className = 'p-4 rounded-2xl bg-gradient-to-r from-navy-900 via-navy-900 to-navy-950 border border-rose-500/30 flex flex-col md:flex-row items-start md:items-center justify-between gap-4 shadow-lg';
+                    bannerIcon.innerText = '🛡️';
+                    bannerTitle.className = 'text-sm font-bold text-rose-300';
+                    bannerTitle.innerText = 'Daily Virgin CPR (Untested Liquidity Magnets ≤ 10 Days Old):';
+                    bannerDesc.innerHTML = 'Price has <strong>never touched these CPR pivot ranges</strong> since formation! Untested CPRs below price act as <strong>Major Demand/Support</strong>, and untested CPRs above price act as <strong>Major Supply/Resistance</strong>.';
+                    tableTitle.innerText = '🛡️ Verified Daily Virgin CPRs (Sorted by Nearest Distance to LTP)';
+                    tableTitle.className = 'text-xs font-bold uppercase tracking-wider text-rose-400 flex items-center gap-2';
                 } else {
+                    btnInside.className = 'px-3 py-1.5 rounded-lg transition-all text-black bg-amber-400 font-bold shadow';
+                    btnVirgin.className = 'px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white';
+                    ivControls.classList.remove('hidden');
+
+                    // Timeframe buttons
+                    const btnDaily = document.getElementById('btn-tf-daily');
+                    const btnMonthly = document.getElementById('btn-tf-monthly');
+                    if (currentTimeframe === 'daily') {
+                        btnDaily.className = 'px-3 py-1.5 rounded-lg transition-all text-black bg-amber-400 font-bold shadow';
+                        btnMonthly.className = 'px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white';
+                        logo.innerText = 'D';
+                    } else {
+                        btnMonthly.className = 'px-3 py-1.5 rounded-lg transition-all text-black bg-amber-400 font-bold shadow';
+                        btnDaily.className = 'px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white';
+                        logo.innerText = 'M';
+                    }
+
+                    // Mode buttons
+                    const btnDev = document.getElementById('btn-mode-dev');
+                    const btnAct = document.getElementById('btn-mode-act');
+                    if (currentMode === 'developing') {
+                        btnDev.className = 'px-3 py-1.5 rounded-lg transition-all text-white bg-purple-600 font-bold shadow';
+                        btnAct.className = 'px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white';
+                    } else {
+                        btnAct.className = 'px-3 py-1.5 rounded-lg transition-all text-white bg-emerald-600 font-bold shadow';
+                        btnDev.className = 'px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white';
+                    }
+
                     const tfName = currentTimeframe === 'daily' ? 'DAILY' : 'MONTHLY';
-                    const modeName = currentMode === 'developing' ? 'DEVELOPING' : 'ACTIVE';
-                    tableTitle.innerText = `🔥 Verified ${tfName} ${modeName} Inside Value + Derivatives Squeeze Risk (200+ Liquid Coins)`;
-                    bannerDesc.innerHTML = 'Scan volatility compression coils alongside <strong>Live Open Interest, Leverage Ratios, and Funding Rates</strong> before big liquidation squeezes.';
+                    const modeName = currentMode === 'developing' ? 'DEVELOPING (NEXT)' : 'ACTIVE (CURRENT)';
+                    badge.innerText = `${tfName} • ${modeName}`;
+                    badge.className = 'px-2 py-0.5 rounded text-[10px] bg-amber-500/20 text-amber-300 font-mono font-medium border border-amber-500/30';
+
+                    bannerCard.className = 'p-4 rounded-2xl bg-gradient-to-r from-amber-950/40 via-navy-900 to-navy-900 border border-amber-500/30 flex flex-col md:flex-row items-start md:items-center justify-between gap-4 shadow-lg';
+                    bannerIcon.innerText = '🎯';
+                    bannerTitle.className = 'text-sm font-bold text-amber-300';
+                    bannerTitle.innerText = `${tfName} ${modeName} Inside Value CPR Setup:`;
+                    bannerDesc.innerHTML = 'These assets are in <strong>verified volatility compression</strong>. Trade breakouts above PMH/Today High or breakdowns below PML/Today Low.';
+                    tableTitle.innerText = `🔥 Verified ${tfName} ${modeName} Inside Value Setups`;
+                    tableTitle.className = 'text-xs font-bold uppercase tracking-wider text-amber-400 flex items-center gap-2';
+                }
+
+                // Crypto market banner adjustments
+                if (currentMarket === 'crypto_all') {
+                    if (currentStrategy === 'virgin_cpr') {
+                        tableTitle.innerText = '🛡️ Verified Daily Virgin CPRs + Derivatives Squeeze Risk (200+ Liquid Coins)';
+                        bannerDesc.innerHTML = 'Price has <strong>never touched these CPR pivot ranges</strong> since formation! Track <strong>Open Interest, 24h Squeeze Ratio, and Funding Rates</strong> to catch high-conviction breakout bounces.';
+                    } else {
+                        const tfName = currentTimeframe === 'daily' ? 'DAILY' : 'MONTHLY';
+                        const modeName = currentMode === 'developing' ? 'DEVELOPING' : 'ACTIVE';
+                        tableTitle.innerText = `🔥 Verified ${tfName} ${modeName} Inside Value + Derivatives Squeeze Risk (200+ Liquid Coins)`;
+                        bannerDesc.innerHTML = 'Scan volatility compression coils alongside <strong>Live Open Interest, Leverage Ratios, and Funding Rates</strong> before big liquidation squeezes.';
+                    }
                 }
             }
 
@@ -1139,11 +1635,15 @@ DASHBOARD_HTML = """
             currentStrategy = strat;
             if (strat === 'virgin_cpr') {
                 currentSort = { column: 'abs_dist', ascending: true };
-            } else {
+            } else if (strat === 'inside_value') {
                 currentSort = { column: 'compression_pct', ascending: false };
             }
             updateUIState();
-            runScan();
+            if (strat === 'oi_radar') {
+                loadOIRadar();
+            } else {
+                runScan();
+            }
         }
 
         function setTimeframe(tf) {
@@ -1700,6 +2200,14 @@ def api_scan():
         "count": len(results),
         "results": results
     })
+
+@app.route("/api/crypto/oi")
+def api_crypto_oi():
+    search = request.args.get("search", "PEPE").strip()
+    watchlist_raw = request.args.get("watchlist", "")
+    watchlist_list = [w.strip() for w in watchlist_raw.split(",") if w.strip()] if watchlist_raw else None
+    data = YAHOO_MGR.get_crypto_oi_radar(search, watchlist_list)
+    return jsonify(data)
 
 if __name__ == "__main__":
     import os
