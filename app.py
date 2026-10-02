@@ -156,6 +156,103 @@ class YahooSessionManager:
         self.data_cache["DYNAMIC_CRYPTO_SYMBOLS"] = (now, sorted_final)
         return sorted_final
 
+    def get_crypto_derivatives_data(self):
+        """
+        Fetches live Open Interest, 24h Volume, and Funding Rate for 1,000+ crypto futures contracts
+        from Gate.io public futures ticker API. Cached for 120 seconds.
+        """
+        cache_key = "CRYPTO_DERIVATIVES_CACHE"
+        now = time.time()
+        if cache_key in self.data_cache:
+            ts, data = self.data_cache[cache_key]
+            if now - ts < 120:
+                return data
+
+        deriv_map = {}
+        try:
+            url = "https://api.gateio.ws/api/v4/futures/usdt/tickers"
+            r = self.session.get(url, timeout=5)
+            if r.status_code == 200:
+                tickers = r.json()
+                for item in tickers:
+                    contract = item.get("contract", "")
+                    if not contract.endswith("_USDT"):
+                        continue
+                    base = contract.split("_")[0].upper()
+                    
+                    try:
+                        total_size = float(item.get("total_size", 0) or 0)
+                        multiplier = float(item.get("quanto_multiplier", 1) or 1)
+                        last_p = float(item.get("last", 0) or 0)
+                        vol_usd = float(item.get("volume_24h_quote", 0) or 0)
+                        funding = float(item.get("funding_rate", 0) or 0)
+                        
+                        oi_usd = total_size * multiplier * last_p
+                        funding_pct = round(funding * 100.0, 4)
+                        squeeze_ratio = round(oi_usd / vol_usd, 2) if vol_usd > 0 else 0.0
+                        
+                        # Format OI
+                        if oi_usd >= 1_000_000_000:
+                            oi_fmt = f"${oi_usd / 1_000_000_000:.2f}B"
+                        elif oi_usd >= 1_000_000:
+                            oi_fmt = f"${oi_usd / 1_000_000:.2f}M"
+                        elif oi_usd >= 1_000:
+                            oi_fmt = f"${oi_usd / 1_000:.1f}K"
+                        else:
+                            oi_fmt = f"${oi_usd:.0f}"
+
+                        # Format Volume
+                        if vol_usd >= 1_000_000_000:
+                            vol_fmt = f"${vol_usd / 1_000_000_000:.2f}B"
+                        elif vol_usd >= 1_000_000:
+                            vol_fmt = f"${vol_usd / 1_000_000:.2f}M"
+                        elif vol_usd >= 1_000:
+                            vol_fmt = f"${vol_usd / 1_000:.1f}K"
+                        else:
+                            vol_fmt = f"${vol_usd:.0f}"
+
+                        # Squeeze classification
+                        if squeeze_ratio >= 3.0:
+                            squeeze_badge = "⚡ High Squeeze"
+                            squeeze_class = "bg-rose-500/20 text-rose-300 border-rose-500/40"
+                            squeeze_risk = "High"
+                        elif squeeze_ratio >= 1.5:
+                            squeeze_badge = "🔥 Over-leveraged"
+                            squeeze_class = "bg-amber-500/20 text-amber-300 border-amber-500/40"
+                            squeeze_risk = "Elevated"
+                        else:
+                            squeeze_badge = "🟢 Balanced"
+                            squeeze_class = "bg-emerald-500/20 text-emerald-300 border-emerald-500/40"
+                            squeeze_risk = "Normal"
+
+                        funding_bias = "Longs Pay" if funding_pct > 0.01 else ("Shorts Pay" if funding_pct < -0.01 else "Neutral")
+
+                        deriv_map[base] = {
+                            "oi_usd": round(oi_usd, 2),
+                            "oi_formatted": oi_fmt,
+                            "vol_usd": round(vol_usd, 2),
+                            "vol_formatted": vol_fmt,
+                            "funding_pct": funding_pct,
+                            "funding_formatted": f"{funding_pct:+.4f}%",
+                            "funding_bias": funding_bias,
+                            "squeeze_ratio": squeeze_ratio,
+                            "squeeze_badge": squeeze_badge,
+                            "squeeze_class": squeeze_class,
+                            "squeeze_risk": squeeze_risk
+                        }
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+
+        self.data_cache[cache_key] = (now, deriv_map)
+        return deriv_map
+
+    def get_crypto_derivatives(self, symbol):
+        base = symbol.replace("-USD", "").replace("USDT", "").replace("USD", "").replace(".NS", "").replace("^", "").upper()
+        data = self.get_crypto_derivatives_data()
+        return data.get(base)
+
     def fetch_crypto_direct(self, symbol):
         """
         Direct native crypto exchange pipeline:
@@ -440,6 +537,7 @@ def process_cpr_setup(symbol, timeframe="monthly", mode="active"):
         quality_tag = {"text": "🟡 Inside Value", "badge": "bg-yellow-500/20 text-yellow-300 border-yellow-500/40"}
 
     clean_symbol = symbol.replace(".NS", "").replace("^", "")
+    oi_info = YAHOO_MGR.get_crypto_derivatives(symbol) if is_crypto else None
 
     return {
         "symbol": symbol,
@@ -461,6 +559,7 @@ def process_cpr_setup(symbol, timeframe="monthly", mode="active"):
         "pm_low": trigger_l,
         "trigger_name_h": trigger_name_h,
         "trigger_name_l": trigger_name_l,
+        "oi_info": oi_info,
         "candles": daily_candles[-60:]
     }
 
@@ -482,6 +581,7 @@ def process_virgin_cpr_daily(symbol, max_days=10):
     is_crypto = "-USD" in symbol
     dec = 4 if is_crypto and ltp < 1.0 else (3 if is_crypto and ltp < 10.0 else 2)
     clean_symbol = symbol.replace(".NS", "").replace("^", "")
+    oi_info = YAHOO_MGR.get_crypto_derivatives(symbol) if is_crypto else None
 
     prev_c_for_change = daily_candles[-2]
     chg = round(ltp - prev_c_for_change['close'], dec)
@@ -549,6 +649,7 @@ def process_virgin_cpr_daily(symbol, max_days=10):
                 "plan": plan,
                 "pm_high": round(session_c['high'], dec),
                 "pm_low": round(session_c['low'], dec),
+                "oi_info": oi_info,
                 "candles": daily_candles[-60:]
             })
 
@@ -731,6 +832,12 @@ DASHBOARD_HTML = """
                 <div><span class="text-slate-400">Virgin BC:</span> <span id="modal-bc" class="font-mono text-blue-400 font-semibold"></span></div>
                 <div><span class="text-slate-400">Status / Distance:</span> <span id="modal-info" class="font-mono text-amber-400 font-semibold"></span></div>
             </div>
+            <div id="modal-crypto-row" class="hidden p-4 grid grid-cols-2 sm:grid-cols-4 gap-3 bg-navy-900 border-b border-navy-700 text-xs">
+                <div><span class="text-slate-400">Open Interest:</span> <span id="modal-oi" class="font-mono text-cyan-400 font-bold ml-1"></span></div>
+                <div><span class="text-slate-400">24h Volume:</span> <span id="modal-vol" class="font-mono text-slate-200 font-semibold ml-1"></span></div>
+                <div><span class="text-slate-400">Funding Rate:</span> <span id="modal-funding" class="font-mono font-semibold ml-1"></span></div>
+                <div><span class="text-slate-400">Squeeze Risk:</span> <span id="modal-squeeze" class="ml-1"></span></div>
+            </div>
             <div id="chart-container" class="w-full h-96 p-2 bg-navy-950"></div>
         </div>
     </div>
@@ -815,6 +922,19 @@ DASHBOARD_HTML = """
                 tableTitle.className = 'text-xs font-bold uppercase tracking-wider text-amber-400 flex items-center gap-2';
             }
 
+            // Crypto market banner adjustments
+            if (currentMarket === 'crypto_all') {
+                if (currentStrategy === 'virgin_cpr') {
+                    tableTitle.innerText = '🛡️ Verified Daily Virgin CPRs + Derivatives Squeeze Risk (200+ Liquid Coins)';
+                    bannerDesc.innerHTML = 'Price has <strong>never touched these CPR pivot ranges</strong> since formation! Track <strong>Open Interest, 24h Squeeze Ratio, and Funding Rates</strong> to catch high-conviction breakout bounces.';
+                } else {
+                    const tfName = currentTimeframe === 'daily' ? 'DAILY' : 'MONTHLY';
+                    const modeName = currentMode === 'developing' ? 'DEVELOPING' : 'ACTIVE';
+                    tableTitle.innerText = `🔥 Verified ${tfName} ${modeName} Inside Value + Derivatives Squeeze Risk (200+ Liquid Coins)`;
+                    bannerDesc.innerHTML = 'Scan volatility compression coils alongside <strong>Live Open Interest, Leverage Ratios, and Funding Rates</strong> before big liquidation squeezes.';
+                }
+            }
+
             // Market selector styles
             ['india', 'us', 'crypto'].forEach(m => {
                 const btn = document.getElementById(`btn-${m}`);
@@ -865,38 +985,72 @@ DASHBOARD_HTML = """
             const icon = document.getElementById('refresh-icon');
             icon.classList.add('animate-spin');
             
-            // Set Table Head according to strategy
+            const isCrypto = currentMarket === 'crypto_all';
+
+            // Set Table Head according to strategy & market
             if (currentStrategy === 'virgin_cpr') {
-                thead.innerHTML = `
-                    <tr class="bg-navy-950/90 border-b border-navy-700 text-slate-400 font-semibold tracking-wider uppercase text-[11px]">
-                        <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('clean_symbol')">Asset Symbol ↕</th>
-                        <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('ltp')">Current LTP & Chg ↕</th>
-                        <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('days_ago')">Virgin Date & Age ↕</th>
-                        <th class="py-3.5 px-4">Untested CPR Band (BC • P • TC)</th>
-                        <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('role')">Role (Demand / Supply) ↕</th>
-                        <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('abs_dist')">Distance to LTP ↕</th>
-                        <th class="py-3.5 px-4">Trade Plan</th>
-                        <th class="py-3.5 px-4 text-center">Chart</th>
-                    </tr>
-                `;
+                if (isCrypto) {
+                    thead.innerHTML = `
+                        <tr class="bg-navy-950/90 border-b border-navy-700 text-slate-400 font-semibold tracking-wider uppercase text-[11px]">
+                            <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('clean_symbol')">Coin Pair ↕</th>
+                            <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('ltp')">Current LTP & Chg ↕</th>
+                            <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('days_ago')">Virgin Date & Age ↕</th>
+                            <th class="py-3.5 px-4">Untested CPR Band (BC • P • TC)</th>
+                            <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('abs_dist')">Dist to LTP ↕</th>
+                            <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('oi_usd')">Open Interest ↕</th>
+                            <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('squeeze_ratio')">Squeeze Risk ↕</th>
+                            <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('funding_pct')">Funding Rate ↕</th>
+                            <th class="py-3.5 px-4 text-center">Chart</th>
+                        </tr>
+                    `;
+                } else {
+                    thead.innerHTML = `
+                        <tr class="bg-navy-950/90 border-b border-navy-700 text-slate-400 font-semibold tracking-wider uppercase text-[11px]">
+                            <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('clean_symbol')">Asset Symbol ↕</th>
+                            <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('ltp')">Current LTP & Chg ↕</th>
+                            <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('days_ago')">Virgin Date & Age ↕</th>
+                            <th class="py-3.5 px-4">Untested CPR Band (BC • P • TC)</th>
+                            <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('role')">Role (Demand / Supply) ↕</th>
+                            <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('abs_dist')">Distance to LTP ↕</th>
+                            <th class="py-3.5 px-4">Trade Plan</th>
+                            <th class="py-3.5 px-4 text-center">Chart</th>
+                        </tr>
+                    `;
+                }
             } else {
-                thead.innerHTML = `
-                    <tr class="bg-navy-950/90 border-b border-navy-700 text-slate-400 font-semibold tracking-wider uppercase text-[11px]">
-                        <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('clean_symbol')">Asset Symbol ↕</th>
-                        <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('ltp')">Current LTP & Chg ↕</th>
-                        <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('compression_pct')">Compression % ↕</th>
-                        <th class="py-3.5 px-4">Target CPR Band (BC • P • TC)</th>
-                        <th class="py-3.5 px-4">Base CPR Band (BC • P • TC)</th>
-                        <th class="py-3.5 px-4">Breakout Triggers</th>
-                        <th class="py-3.5 px-4">Targets (S1 • R1)</th>
-                        <th class="py-3.5 px-4 text-center">Chart</th>
-                    </tr>
-                `;
+                if (isCrypto) {
+                    thead.innerHTML = `
+                        <tr class="bg-navy-950/90 border-b border-navy-700 text-slate-400 font-semibold tracking-wider uppercase text-[11px]">
+                            <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('clean_symbol')">Coin Pair ↕</th>
+                            <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('ltp')">Current LTP & Chg ↕</th>
+                            <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('compression_pct')">Compression % ↕</th>
+                            <th class="py-3.5 px-4">Target CPR Band (BC • P • TC)</th>
+                            <th class="py-3.5 px-4">Breakout Triggers</th>
+                            <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('oi_usd')">Open Interest ↕</th>
+                            <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('squeeze_ratio')">Squeeze Risk ↕</th>
+                            <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('funding_pct')">Funding Rate ↕</th>
+                            <th class="py-3.5 px-4 text-center">Chart</th>
+                        </tr>
+                    `;
+                } else {
+                    thead.innerHTML = `
+                        <tr class="bg-navy-950/90 border-b border-navy-700 text-slate-400 font-semibold tracking-wider uppercase text-[11px]">
+                            <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('clean_symbol')">Asset Symbol ↕</th>
+                            <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('ltp')">Current LTP & Chg ↕</th>
+                            <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('compression_pct')">Compression % ↕</th>
+                            <th class="py-3.5 px-4">Target CPR Band (BC • P • TC)</th>
+                            <th class="py-3.5 px-4">Base CPR Band (BC • P • TC)</th>
+                            <th class="py-3.5 px-4">Breakout Triggers</th>
+                            <th class="py-3.5 px-4">Targets (S1 • R1)</th>
+                            <th class="py-3.5 px-4 text-center">Chart</th>
+                        </tr>
+                    `;
+                }
             }
 
             tbody.innerHTML = `
                 <tr>
-                    <td colspan="8" class="text-center py-16 text-slate-400 font-sans">
+                    <td colspan="${isCrypto ? 9 : 8}" class="text-center py-16 text-slate-400 font-sans">
                         <div class="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-rose-500 mb-3"></div>
                         <p>Scanning ${currentMarket.toUpperCase()} for ${currentStrategy === 'virgin_cpr' ? 'Daily Virgin CPRs' : 'Inside Value CPRs'}...</p>
                     </td>
@@ -912,7 +1066,7 @@ DASHBOARD_HTML = """
             } catch (err) {
                 tbody.innerHTML = `
                     <tr>
-                        <td colspan="8" class="text-center py-12 text-rose-400 font-sans">
+                        <td colspan="${isCrypto ? 9 : 8}" class="text-center py-12 text-rose-400 font-sans">
                             Failed to fetch market data. Please retry.
                         </td>
                     </tr>
@@ -955,17 +1109,27 @@ DASHBOARD_HTML = """
                     valA = a.compression_pct || 0; valB = b.compression_pct || 0;
                 } else if (currentSort.column === 'role') {
                     valA = a.role || ''; valB = b.role || '';
+                } else if (currentSort.column === 'oi_usd') {
+                    valA = (a.oi_info && a.oi_info.oi_usd) || 0;
+                    valB = (b.oi_info && b.oi_info.oi_usd) || 0;
+                } else if (currentSort.column === 'squeeze_ratio') {
+                    valA = (a.oi_info && a.oi_info.squeeze_ratio) || 0;
+                    valB = (b.oi_info && b.oi_info.squeeze_ratio) || 0;
+                } else if (currentSort.column === 'funding_pct') {
+                    valA = (a.oi_info && a.oi_info.funding_pct) || 0;
+                    valB = (b.oi_info && b.oi_info.funding_pct) || 0;
                 }
                 if (valA < valB) return currentSort.ascending ? -1 : 1;
                 if (valA > valB) return currentSort.ascending ? 1 : -1;
                 return 0;
             });
 
+            const isCrypto = currentMarket === 'crypto_all';
             const tbody = document.getElementById('table-body');
             if (filtered.length === 0) {
                 tbody.innerHTML = `
                     <tr>
-                        <td colspan="8" class="text-center py-16 text-slate-400 font-sans">
+                        <td colspan="${isCrypto ? 9 : 8}" class="text-center py-16 text-slate-400 font-sans">
                             <div class="text-3xl mb-2">🔍</div>
                             <p class="text-sm font-semibold text-slate-300">No matching setups found right now.</p>
                             <p class="text-xs text-slate-500 mt-1">Try switching market or strategy.</p>
@@ -980,6 +1144,60 @@ DASHBOARD_HTML = """
                     const chgColor = item.change >= 0 ? 'text-emerald-400' : 'text-rose-400';
                     const chgSign = item.change >= 0 ? '+' : '';
                     const distColor = item.dist_pct > 0 ? 'text-emerald-400' : 'text-rose-400';
+
+                    if (isCrypto) {
+                        return `
+                            <tr class="hover:bg-navy-800/80 transition group">
+                                <td class="py-3.5 px-4">
+                                    <div class="font-bold text-white text-sm tracking-tight">${item.clean_symbol}</div>
+                                    <div class="text-[10px] text-slate-500 font-sans">${item.symbol}</div>
+                                </td>
+                                <td class="py-3.5 px-4">
+                                    <div class="font-bold text-slate-100">${item.ltp.toLocaleString()}</div>
+                                    <div class="${chgColor} text-[11px] font-sans font-medium">${chgSign}${item.change} (${chgSign}${item.change_pct}%)</div>
+                                </td>
+                                <td class="py-3.5 px-4 text-[11px]">
+                                    <div class="text-white font-semibold">${item.virgin_date}</div>
+                                    <div class="text-rose-400 font-sans text-[10px] font-medium">${item.days_ago} ${item.days_ago === 1 ? 'day' : 'days'} ago</div>
+                                </td>
+                                <td class="py-3.5 px-4 text-[11px]">
+                                    <div class="text-slate-200 font-semibold"><span class="text-blue-400">${item.curr_cpr.cpr_bot}</span> • <span class="text-purple-400 font-bold">${item.curr_cpr.p}</span> • <span class="text-blue-400">${item.curr_cpr.cpr_top}</span></div>
+                                    <div class="text-[10px] text-slate-400 font-sans mt-0.5">Width: ${item.curr_cpr.cpr_width_pct}%</div>
+                                </td>
+                                <td class="py-3.5 px-4 text-[11px]">
+                                    <div class="${distColor} font-bold">${item.dist_pct > 0 ? '+' : ''}${item.dist_pct}%</div>
+                                    <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold border ${item.role_badge} font-sans mt-0.5">
+                                        ${item.role}
+                                    </span>
+                                </td>
+                                <td class="py-3.5 px-4 text-[11px]">
+                                    ${item.oi_info ? `
+                                        <div class="text-cyan-400 font-bold font-mono">${item.oi_info.oi_formatted}</div>
+                                        <div class="text-[10px] text-slate-400 font-mono">Vol: ${item.oi_info.vol_formatted}</div>
+                                    ` : `<span class="text-slate-500 font-mono">-</span>`}
+                                </td>
+                                <td class="py-3.5 px-4">
+                                    ${item.oi_info ? `
+                                        <span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold border ${item.oi_info.squeeze_class} font-sans">
+                                            ${item.oi_info.squeeze_badge} (${item.oi_info.squeeze_ratio}x)
+                                        </span>
+                                    ` : `<span class="text-slate-500 font-mono text-xs">-</span>`}
+                                </td>
+                                <td class="py-3.5 px-4 text-[11px]">
+                                    ${item.oi_info ? `
+                                        <div class="font-mono font-semibold ${item.oi_info.funding_pct > 0 ? 'text-emerald-400' : (item.oi_info.funding_pct < 0 ? 'text-rose-400' : 'text-slate-300')}">${item.oi_info.funding_formatted}</div>
+                                        <div class="text-[10px] text-slate-500 font-sans">${item.oi_info.funding_bias}</div>
+                                    ` : `<span class="text-slate-500 font-mono text-xs">-</span>`}
+                                </td>
+                                <td class="py-3.5 px-4 text-center">
+                                    <button onclick="openChart('${item.symbol}', '${item.virgin_date}')" class="px-3 py-1 rounded-lg bg-navy-800 hover:bg-rose-500 hover:text-white text-slate-200 font-sans text-xs transition border border-navy-700 shadow font-semibold">
+                                        View
+                                    </button>
+                                </td>
+                            </tr>
+                        `;
+                    }
+
                     return `
                         <tr class="hover:bg-navy-800/80 transition group">
                             <td class="py-3.5 px-4">
@@ -1022,6 +1240,60 @@ DASHBOARD_HTML = """
                 tbody.innerHTML = filtered.map(item => {
                     const chgColor = item.change >= 0 ? 'text-emerald-400' : 'text-rose-400';
                     const chgSign = item.change >= 0 ? '+' : '';
+
+                    if (isCrypto) {
+                        return `
+                            <tr class="hover:bg-navy-800/80 transition group">
+                                <td class="py-3.5 px-4">
+                                    <div class="font-bold text-white text-sm tracking-tight">${item.clean_symbol}</div>
+                                    <div class="text-[10px] text-slate-500 font-sans">${item.symbol}</div>
+                                </td>
+                                <td class="py-3.5 px-4">
+                                    <div class="font-bold text-slate-100">${item.ltp.toLocaleString()}</div>
+                                    <div class="${chgColor} text-[11px] font-sans font-medium">${chgSign}${item.change} (${chgSign}${item.change_pct}%)</div>
+                                </td>
+                                <td class="py-3.5 px-4">
+                                    <span class="inline-flex items-center px-2.5 py-1 rounded-md text-[11px] font-semibold border ${item.quality_tag.badge} font-sans">
+                                        ⚡ -${item.compression_pct}%
+                                    </span>
+                                    <div class="${item.position_status.class} text-[10px] font-sans mt-0.5">${item.position_status.text}</div>
+                                </td>
+                                <td class="py-3.5 px-4 text-[11px]">
+                                    <div class="text-slate-200 font-semibold"><span class="text-blue-400">${item.curr_cpr.cpr_bot}</span> • <span class="text-purple-400 font-bold">${item.curr_cpr.p}</span> • <span class="text-blue-400">${item.curr_cpr.cpr_top}</span></div>
+                                    <div class="text-[10px] text-amber-400 font-sans mt-0.5 font-medium">${item.target_label}</div>
+                                </td>
+                                <td class="py-3.5 px-4 text-[11px]">
+                                    <div><span class="text-slate-400 font-sans">${item.trigger_name_h}:</span> <span class="text-emerald-400 font-bold">${item.pm_high}</span></div>
+                                    <div><span class="text-slate-400 font-sans">${item.trigger_name_l}:</span> <span class="text-rose-400 font-bold">${item.pm_low}</span></div>
+                                </td>
+                                <td class="py-3.5 px-4 text-[11px]">
+                                    ${item.oi_info ? `
+                                        <div class="text-cyan-400 font-bold font-mono">${item.oi_info.oi_formatted}</div>
+                                        <div class="text-[10px] text-slate-400 font-mono">Vol: ${item.oi_info.vol_formatted}</div>
+                                    ` : `<span class="text-slate-500 font-mono">-</span>`}
+                                </td>
+                                <td class="py-3.5 px-4">
+                                    ${item.oi_info ? `
+                                        <span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold border ${item.oi_info.squeeze_class} font-sans">
+                                            ${item.oi_info.squeeze_badge} (${item.oi_info.squeeze_ratio}x)
+                                        </span>
+                                    ` : `<span class="text-slate-500 font-mono text-xs">-</span>`}
+                                </td>
+                                <td class="py-3.5 px-4 text-[11px]">
+                                    ${item.oi_info ? `
+                                        <div class="font-mono font-semibold ${item.oi_info.funding_pct > 0 ? 'text-emerald-400' : (item.oi_info.funding_pct < 0 ? 'text-rose-400' : 'text-slate-300')}">${item.oi_info.funding_formatted}</div>
+                                        <div class="text-[10px] text-slate-500 font-sans">${item.oi_info.funding_bias}</div>
+                                    ` : `<span class="text-slate-500 font-mono text-xs">-</span>`}
+                                </td>
+                                <td class="py-3.5 px-4 text-center">
+                                    <button onclick="openChart('${item.symbol}')" class="px-3 py-1 rounded-lg bg-navy-800 hover:bg-amber-500 hover:text-black text-slate-200 font-sans text-xs transition border border-navy-700 shadow font-semibold">
+                                        View
+                                    </button>
+                                </td>
+                            </tr>
+                        `;
+                    }
+
                     return `
                         <tr class="hover:bg-navy-800/80 transition group">
                             <td class="py-3.5 px-4">
@@ -1085,6 +1357,22 @@ DASHBOARD_HTML = """
             document.getElementById('modal-tc').innerText = item.curr_cpr.cpr_top;
             document.getElementById('modal-p').innerText = item.curr_cpr.p;
             document.getElementById('modal-bc').innerText = item.curr_cpr.cpr_bot;
+
+            // Crypto Derivatives row in Modal
+            const cryptoRow = document.getElementById('modal-crypto-row');
+            if (item.oi_info) {
+                cryptoRow.classList.remove('hidden');
+                document.getElementById('modal-oi').innerText = item.oi_info.oi_formatted;
+                document.getElementById('modal-vol').innerText = item.oi_info.vol_formatted;
+                const fRateEl = document.getElementById('modal-funding');
+                fRateEl.innerText = `${item.oi_info.funding_formatted} (${item.oi_info.funding_bias})`;
+                fRateEl.className = `font-mono font-semibold ml-1 ${item.oi_info.funding_pct > 0 ? 'text-emerald-400' : (item.oi_info.funding_pct < 0 ? 'text-rose-400' : 'text-slate-300')}`;
+                
+                const sqEl = document.getElementById('modal-squeeze');
+                sqEl.innerHTML = `<span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold border ${item.oi_info.squeeze_class}">${item.oi_info.squeeze_badge} (${item.oi_info.squeeze_ratio}x)</span>`;
+            } else {
+                cryptoRow.classList.add('hidden');
+            }
 
             const modal = document.getElementById('chart-modal');
             modal.classList.remove('hidden');
