@@ -227,6 +227,20 @@ class YahooSessionManager:
 
                         funding_bias = "Longs Pay" if funding_pct > 0.01 else ("Shorts Pay" if funding_pct < -0.01 else "Neutral")
 
+                        if squeeze_ratio >= 1.5:
+                            if funding_pct < -0.005:
+                                squeeze_direction = "🚀 Short Squeeze Target"
+                                squeeze_dir_class = "text-emerald-400 font-bold"
+                            elif funding_pct > 0.015:
+                                squeeze_direction = "💥 Long Flush Risk"
+                                squeeze_dir_class = "text-rose-400 font-bold"
+                            else:
+                                squeeze_direction = "⚡ High Leverage Coil"
+                                squeeze_dir_class = "text-amber-400 font-medium"
+                        else:
+                            squeeze_direction = "🟢 Balanced Flow"
+                            squeeze_dir_class = "text-slate-400 font-normal"
+
                         deriv_map[base] = {
                             "oi_usd": round(oi_usd, 2),
                             "oi_formatted": oi_fmt,
@@ -238,7 +252,9 @@ class YahooSessionManager:
                             "squeeze_ratio": squeeze_ratio,
                             "squeeze_badge": squeeze_badge,
                             "squeeze_class": squeeze_class,
-                            "squeeze_risk": squeeze_risk
+                            "squeeze_risk": squeeze_risk,
+                            "squeeze_direction": squeeze_direction,
+                            "squeeze_dir_class": squeeze_dir_class
                         }
                     except Exception:
                         continue
@@ -758,6 +774,9 @@ DASHBOARD_HTML = """
                     </button>
                 </div>
 
+                <button onclick="openPlaybookModal()" class="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-navy-800 hover:bg-navy-700 text-amber-300 font-semibold text-xs border border-amber-500/30 transition shadow shadow-amber-950/20 active:scale-95">
+                    📖 Playbook
+                </button>
                 <button onclick="runScan()" id="btn-refresh" class="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-400 hover:to-orange-500 text-black font-bold text-xs shadow-lg shadow-orange-950/30 transition-all active:scale-95">
                     <svg id="refresh-icon" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
                     <span>Scan</span>
@@ -788,11 +807,20 @@ DASHBOARD_HTML = """
 
         <!-- Table View -->
         <div class="glass rounded-2xl border border-navy-700/80 overflow-hidden shadow-2xl flex-1 flex flex-col">
-            <div class="p-3.5 bg-navy-900/90 border-b border-navy-700 flex items-center justify-between gap-4">
+            <div class="p-3.5 bg-navy-900/90 border-b border-navy-700 flex flex-wrap items-center justify-between gap-3">
                 <span class="text-xs font-bold uppercase tracking-wider text-rose-400 flex items-center gap-2" id="table-title">
                     🛡️ Verified Daily Virgin CPRs (Sorted by Nearest Distance to LTP)
                 </span>
-                <input type="text" id="search-input" onkeyup="renderTable()" placeholder="Search symbol..." class="bg-navy-950 border border-navy-700 text-slate-200 text-xs rounded-xl px-3.5 py-1.5 focus:outline-none focus:border-rose-500 w-52 transition shadow-inner">
+                <div class="flex items-center gap-2">
+                    <!-- Quick Filter Pills -->
+                    <div id="quick-filters" class="flex items-center gap-1 bg-navy-950 p-1 rounded-xl border border-navy-700 text-[11px]">
+                        <button onclick="setQuickFilter('all')" id="qf-all" class="px-2.5 py-1 rounded-lg bg-navy-800 text-white font-semibold">All</button>
+                        <button onclick="setQuickFilter('squeeze')" id="qf-squeeze" class="px-2.5 py-1 rounded-lg text-slate-400 hover:text-white">⚡ Squeeze (≥3x)</button>
+                        <button onclick="setQuickFilter('magnet')" id="qf-magnet" class="px-2.5 py-1 rounded-lg text-slate-400 hover:text-white">🎯 Magnet (&lt;2%)</button>
+                        <button onclick="setQuickFilter('megacoil')" id="qf-megacoil" class="px-2.5 py-1 rounded-lg text-slate-400 hover:text-white">🔥 Coil (&gt;70%)</button>
+                    </div>
+                    <input type="text" id="search-input" onkeyup="renderTable()" placeholder="Search symbol..." class="bg-navy-950 border border-navy-700 text-slate-200 text-xs rounded-xl px-3.5 py-1.5 focus:outline-none focus:border-rose-500 w-40 transition shadow-inner">
+                </div>
             </div>
 
             <div class="overflow-x-auto flex-1">
@@ -842,6 +870,139 @@ DASHBOARD_HTML = """
         </div>
     </div>
 
+    <!-- Playbook & Roadmap Modal -->
+    <div id="playbook-modal" class="fixed inset-0 bg-black/85 z-50 hidden backdrop-blur-md flex items-center justify-center p-4">
+        <div class="bg-navy-900 border border-amber-500/40 rounded-2xl w-full max-w-5xl overflow-hidden shadow-2xl flex flex-col max-h-[92vh]">
+            <div class="flex items-center justify-between px-6 py-4 border-b border-navy-700 bg-navy-950/90">
+                <div class="flex items-center gap-3">
+                    <span class="text-2xl">📖</span>
+                    <div>
+                        <h2 class="text-base font-bold text-white tracking-tight flex items-center gap-2">
+                            PIVOT BOSS CRYPTO PLAYBOOK & STRATEGY ROADMAP
+                            <span class="px-2 py-0.5 rounded text-[10px] bg-amber-500/20 text-amber-300 font-mono border border-amber-500/40">MASTER ROADMAP</span>
+                        </h2>
+                        <p class="text-xs text-slate-400">Institutional confluence combining Virgin CPR, Inside Value, Open Interest, Squeeze Ratio & Funding</p>
+                    </div>
+                </div>
+                <button onclick="closePlaybookModal()" class="text-slate-400 hover:text-white p-2 rounded-lg hover:bg-navy-800 transition">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                </button>
+            </div>
+            
+            <!-- Playbook Body (Scrollable) -->
+            <div class="p-6 overflow-y-auto space-y-6 text-xs text-slate-300 leading-relaxed font-sans">
+                <!-- Grid 1: The Core Metrics -->
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div class="p-4 rounded-xl bg-navy-950/70 border border-navy-700">
+                        <div class="text-rose-400 font-bold text-sm mb-1.5 flex items-center gap-1.5">
+                            <span>🛡️ Virgin CPR (≤ 10d)</span>
+                        </div>
+                        <p class="text-slate-400 leading-normal">A Central Pivot Range where price <strong class="text-white">never traded through</strong> during that daily session. Untested CPRs are institutional liquidity magnets.</p>
+                        <div class="mt-2 text-[11px] text-emerald-400 font-medium">• Below LTP = High-Probability Demand / Support</div>
+                        <div class="text-[11px] text-rose-400 font-medium">• Above LTP = High-Probability Supply / Resistance</div>
+                    </div>
+                    <div class="p-4 rounded-xl bg-navy-950/70 border border-navy-700">
+                        <div class="text-amber-400 font-bold text-sm mb-1.5 flex items-center gap-1.5">
+                            <span>🎯 Inside Value (Coil)</span>
+                        </div>
+                        <p class="text-slate-400 leading-normal">The new CPR is <strong class="text-white">completely engulfed</strong> inside the prior period CPR. Extreme volatility compression coiling energy before an explosive directional breakout.</p>
+                        <div class="mt-2 text-[11px] text-purple-300 font-medium">• Compression &gt; 70% = Mega Coil Explosion Imminent</div>
+                        <div class="text-[11px] text-slate-300 font-medium">• Triggers: Buy &gt; PDH / Sell &lt; PDL</div>
+                    </div>
+                    <div class="p-4 rounded-xl bg-navy-950/70 border border-navy-700">
+                        <div class="text-cyan-400 font-bold text-sm mb-1.5 flex items-center gap-1.5">
+                            <span>⚡ Squeeze Ratio & OI</span>
+                        </div>
+                        <p class="text-slate-400 leading-normal"><strong class="text-white">Squeeze Ratio = OI (USD) / 24h Volume (USD)</strong>. When &ge; 3.0x, open speculative leverage heavily outweighs real liquidity.</p>
+                        <div class="mt-2 text-[11px] text-emerald-400 font-medium">• Negative Funding + Breakout = 🚀 Short Squeeze Target</div>
+                        <div class="text-[11px] text-rose-400 font-medium">• Positive Funding + Breakdown = 💥 Long Flush Cascade</div>
+                    </div>
+                </div>
+
+                <!-- 3 High Probability Crypto Setups -->
+                <div class="p-5 rounded-xl bg-navy-950/80 border border-navy-700 space-y-4">
+                    <h3 class="text-sm font-bold text-white uppercase tracking-wider flex items-center gap-2">
+                        🔥 3 Institutional Crypto Trade Setups (Rules & Execution)
+                    </h3>
+
+                    <!-- Strategy 1 -->
+                    <div class="p-4 rounded-lg bg-navy-900 border border-navy-700/80 space-y-2">
+                        <div class="flex items-center justify-between font-bold text-slate-200">
+                            <span class="text-rose-400 text-sm">Setup 1: Virgin CPR Magnet Bounce / Rejection (Mean Reversion)</span>
+                            <span class="text-[10px] bg-rose-500/20 text-rose-300 px-2 py-0.5 rounded border border-rose-500/40">Win Rate: ~75%</span>
+                        </div>
+                        <p class="text-slate-300">When price trends away from a fresh Virgin CPR (1–10 days old), aggressive traders get overextended. Price gets pulled back like a rubber band into the untested zone.</p>
+                        <div class="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-2 text-[11px]">
+                            <div class="p-2.5 rounded bg-navy-950 border border-navy-800"><strong class="text-white">Entry:</strong> Wait for price to touch Virgin CPR [BC • TC]. Enter on 5m/15m reversal candle closing outside the band.</div>
+                            <div class="p-2.5 rounded bg-navy-950 border border-navy-800"><strong class="text-white">Stop Loss:</strong> 0.4% beyond the outer CPR band (beyond BC for longs, beyond TC for shorts).</div>
+                            <div class="p-2.5 rounded bg-navy-950 border border-navy-800"><strong class="text-white">Take Profit:</strong> Prior Day High/Low or Next Pivot (R1/S1). Risk/Reward: 1:2.5 to 1:4.</div>
+                        </div>
+                    </div>
+
+                    <!-- Strategy 2 -->
+                    <div class="p-4 rounded-lg bg-navy-900 border border-navy-700/80 space-y-2">
+                        <div class="flex items-center justify-between font-bold text-slate-200">
+                            <span class="text-purple-400 text-sm">Setup 2: Inside Value Volatility Breakout + Squeeze (Trend Expansion)</span>
+                            <span class="text-[10px] bg-purple-500/20 text-purple-300 px-2 py-0.5 rounded border border-purple-500/40">Momentum Explosions</span>
+                        </div>
+                        <p class="text-slate-300">Inside Value means the market had an indecision / coiling session. When combined with <strong class="text-cyan-300">Squeeze Ratio &ge; 2.0x</strong>, the breakout is fueled by aggressive forced market orders.</p>
+                        <div class="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-2 text-[11px]">
+                            <div class="p-2.5 rounded bg-navy-950 border border-navy-800"><strong class="text-white">Long Entry:</strong> 15m candle close above PDH (Prior Day High). <br><strong class="text-white">Short Entry:</strong> 15m candle close below PDL.</div>
+                            <div class="p-2.5 rounded bg-navy-950 border border-navy-800"><strong class="text-white">Stop Loss:</strong> Back inside Today's Central Pivot (P) or opposite trigger.</div>
+                            <div class="p-2.5 rounded bg-navy-950 border border-navy-800"><strong class="text-white">Take Profit:</strong> Camarilla H4, Pivot R2, or R3. Expected gain: 6% – 18%.</div>
+                        </div>
+                    </div>
+
+                    <!-- Strategy 3 -->
+                    <div class="p-4 rounded-lg bg-navy-900 border border-navy-700/80 space-y-2">
+                        <div class="flex items-center justify-between font-bold text-slate-200">
+                            <span class="text-emerald-400 text-sm">Setup 3: Trapped Trader Liquidation Cascade (Short Squeeze / Long Flush)</span>
+                            <span class="text-[10px] bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded border border-emerald-500/40">High-Conviction Squeeze</span>
+                        </div>
+                        <p class="text-slate-300">Look for coins flagged with <strong class="text-emerald-400 font-mono">🚀 Short Squeeze Target</strong> (Negative Funding + High Squeeze Ratio &ge; 3.0x). Shorts are paying longs every 8 hours while price refuses to drop.</p>
+                        <div class="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-2 text-[11px]">
+                            <div class="p-2.5 rounded bg-navy-950 border border-navy-800"><strong class="text-white">Entry:</strong> Price reclaims and breaks above CPR Top Central (TC) or PDH.</div>
+                            <div class="p-2.5 rounded bg-navy-950 border border-navy-800"><strong class="text-white">Stop Loss:</strong> 0.5% below the breakout candle low.</div>
+                            <div class="p-2.5 rounded bg-navy-950 border border-navy-800"><strong class="text-white">Take Profit:</strong> Trail behind 15m candle low until liquidation volume spike subsides.</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Daily Workflow & Rules -->
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div class="p-4 rounded-xl bg-navy-950/70 border border-navy-700 space-y-2">
+                        <div class="text-amber-400 font-bold text-sm flex items-center gap-1.5">
+                            <span>📋 Daily 5-Minute Morning Screening Routine</span>
+                        </div>
+                        <ol class="list-decimal list-inside space-y-1 text-slate-400">
+                            <li><strong class="text-white">Check BTC-USD first:</strong> If BTC is above CPR, focus on Long setups. If BTC is below CPR, focus on Short setups.</li>
+                            <li><strong class="text-white">Click 🎯 Magnet (&lt;2%):</strong> See which coins are actively approaching or touching untested Virgin CPR levels right now.</li>
+                            <li><strong class="text-white">Click ⚡ Squeeze (≥3x):</strong> Identify over-leveraged coins with pending liquidation squeeze risks.</li>
+                            <li><strong class="text-white">Launch TV ↗:</strong> Open the selected coin directly in TradingView to fine-tune entry timing on the 5m chart.</li>
+                        </ol>
+                    </div>
+
+                    <div class="p-4 rounded-xl bg-navy-950/70 border border-navy-700 space-y-2">
+                        <div class="text-rose-400 font-bold text-sm flex items-center gap-1.5">
+                            <span>🛡️ Golden Risk Management Rules</span>
+                        </div>
+                        <ul class="space-y-1 text-slate-400">
+                            <li><strong class="text-white">Maximum 1% - 1.5% Risk:</strong> Never risk more than 1.5% of total portfolio on an individual altcoin position.</li>
+                            <li><strong class="text-white">Respect Breakeven:</strong> Once price reaches 1.5R or tests S1/R1, immediately move Stop Loss to Breakeven.</li>
+                            <li><strong class="text-white">Beware Weekend Chop:</strong> Virgin CPRs work best during high-volume sessions (Mon–Fri). Beware low-liquidity weekend stop hunts.</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+
+            <div class="p-4 border-t border-navy-700 bg-navy-950/90 flex justify-end">
+                <button onclick="closePlaybookModal()" class="px-5 py-2 rounded-xl bg-amber-400 hover:bg-amber-300 text-black font-bold text-xs transition shadow active:scale-95">
+                    Close Playbook & Trade
+                </button>
+            </div>
+        </div>
+    </div>
+
     <script>
         let currentStrategy = 'virgin_cpr'; // 'virgin_cpr' or 'inside_value'
         let currentTimeframe = 'daily';
@@ -850,6 +1011,30 @@ DASHBOARD_HTML = """
         let currentSort = { column: 'abs_dist', ascending: true };
         let scanData = [];
         let chartInstance = null;
+        let currentQuickFilter = 'all'; // 'all', 'squeeze', 'magnet', 'megacoil'
+
+        function openPlaybookModal() {
+            document.getElementById('playbook-modal').classList.remove('hidden');
+        }
+
+        function closePlaybookModal() {
+            document.getElementById('playbook-modal').classList.add('hidden');
+        }
+
+        function setQuickFilter(qf) {
+            currentQuickFilter = qf;
+            ['all', 'squeeze', 'magnet', 'megacoil'].forEach(id => {
+                const btn = document.getElementById(`qf-${id}`);
+                if (btn) {
+                    if (id === qf) {
+                        btn.className = 'px-2.5 py-1 rounded-lg bg-amber-400 text-black font-bold shadow';
+                    } else {
+                        btn.className = 'px-2.5 py-1 rounded-lg text-slate-400 hover:text-white';
+                    }
+                }
+            });
+            renderTable();
+        }
 
         function updateUIState() {
             const btnVirgin = document.getElementById('btn-strat-virgin');
@@ -1092,6 +1277,13 @@ DASHBOARD_HTML = """
                 if (query && !item.symbol.toUpperCase().includes(query) && !item.clean_symbol.toUpperCase().includes(query)) {
                     return false;
                 }
+                if (currentQuickFilter === 'squeeze') {
+                    if (!item.oi_info || item.oi_info.squeeze_ratio < 3.0) return false;
+                } else if (currentQuickFilter === 'magnet') {
+                    if ((item.abs_dist === undefined ? 999 : item.abs_dist) > 2.0) return false;
+                } else if (currentQuickFilter === 'megacoil') {
+                    if ((item.compression_pct || 0) < 70) return false;
+                }
                 return true;
             });
 
@@ -1132,7 +1324,7 @@ DASHBOARD_HTML = """
                         <td colspan="${isCrypto ? 9 : 8}" class="text-center py-16 text-slate-400 font-sans">
                             <div class="text-3xl mb-2">🔍</div>
                             <p class="text-sm font-semibold text-slate-300">No matching setups found right now.</p>
-                            <p class="text-xs text-slate-500 mt-1">Try switching market or strategy.</p>
+                            <p class="text-xs text-slate-500 mt-1">Try switching filter pill, market or strategy.</p>
                         </td>
                     </tr>
                 `;
@@ -1146,6 +1338,13 @@ DASHBOARD_HTML = """
                     const distColor = item.dist_pct > 0 ? 'text-emerald-400' : 'text-rose-400';
 
                     if (isCrypto) {
+                        let radarBadge = '';
+                        if (item.abs_dist <= 0.75) {
+                            radarBadge = `<div class="mt-1"><span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-500/30 text-emerald-300 border border-emerald-400/50 animate-pulse font-sans"><span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span> Live Test</span></div>`;
+                        } else if (item.abs_dist <= 2.0) {
+                            radarBadge = `<div class="mt-1"><span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-500/20 text-amber-300 border border-amber-500/30 font-sans"><span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span> Imminent</span></div>`;
+                        }
+
                         return `
                             <tr class="hover:bg-navy-800/80 transition group">
                                 <td class="py-3.5 px-4">
@@ -1169,6 +1368,7 @@ DASHBOARD_HTML = """
                                     <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold border ${item.role_badge} font-sans mt-0.5">
                                         ${item.role}
                                     </span>
+                                    ${radarBadge}
                                 </td>
                                 <td class="py-3.5 px-4 text-[11px]">
                                     ${item.oi_info ? `
@@ -1178,9 +1378,8 @@ DASHBOARD_HTML = """
                                 </td>
                                 <td class="py-3.5 px-4">
                                     ${item.oi_info ? `
-                                        <span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold border ${item.oi_info.squeeze_class} font-sans">
-                                            ${item.oi_info.squeeze_badge} (${item.oi_info.squeeze_ratio}x)
-                                        </span>
+                                        <div><span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold border ${item.oi_info.squeeze_class} font-sans">${item.oi_info.squeeze_badge} (${item.oi_info.squeeze_ratio}x)</span></div>
+                                        <div class="text-[10px] ${item.oi_info.squeeze_dir_class} font-sans mt-0.5">${item.oi_info.squeeze_direction}</div>
                                     ` : `<span class="text-slate-500 font-mono text-xs">-</span>`}
                                 </td>
                                 <td class="py-3.5 px-4 text-[11px]">
@@ -1190,9 +1389,14 @@ DASHBOARD_HTML = """
                                     ` : `<span class="text-slate-500 font-mono text-xs">-</span>`}
                                 </td>
                                 <td class="py-3.5 px-4 text-center">
-                                    <button onclick="openChart('${item.symbol}', '${item.virgin_date}')" class="px-3 py-1 rounded-lg bg-navy-800 hover:bg-rose-500 hover:text-white text-slate-200 font-sans text-xs transition border border-navy-700 shadow font-semibold">
-                                        View
-                                    </button>
+                                    <div class="flex items-center justify-center gap-1.5">
+                                        <a href="https://www.tradingview.com/chart/?symbol=BINANCE:${item.clean_symbol}USDT" target="_blank" rel="noopener" class="px-2 py-1 rounded-lg bg-navy-800 hover:bg-sky-600 hover:text-white text-slate-300 font-sans text-xs transition border border-navy-700 shadow font-semibold" title="Open TradingView">
+                                            TV ↗
+                                        </a>
+                                        <button onclick="openChart('${item.symbol}', '${item.virgin_date}')" class="px-2.5 py-1 rounded-lg bg-navy-800 hover:bg-rose-500 hover:text-white text-slate-200 font-sans text-xs transition border border-navy-700 shadow font-semibold">
+                                            View
+                                        </button>
+                                    </div>
                                 </td>
                             </tr>
                         `;
@@ -1274,9 +1478,8 @@ DASHBOARD_HTML = """
                                 </td>
                                 <td class="py-3.5 px-4">
                                     ${item.oi_info ? `
-                                        <span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold border ${item.oi_info.squeeze_class} font-sans">
-                                            ${item.oi_info.squeeze_badge} (${item.oi_info.squeeze_ratio}x)
-                                        </span>
+                                        <div><span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold border ${item.oi_info.squeeze_class} font-sans">${item.oi_info.squeeze_badge} (${item.oi_info.squeeze_ratio}x)</span></div>
+                                        <div class="text-[10px] ${item.oi_info.squeeze_dir_class} font-sans mt-0.5">${item.oi_info.squeeze_direction}</div>
                                     ` : `<span class="text-slate-500 font-mono text-xs">-</span>`}
                                 </td>
                                 <td class="py-3.5 px-4 text-[11px]">
@@ -1286,9 +1489,14 @@ DASHBOARD_HTML = """
                                     ` : `<span class="text-slate-500 font-mono text-xs">-</span>`}
                                 </td>
                                 <td class="py-3.5 px-4 text-center">
-                                    <button onclick="openChart('${item.symbol}')" class="px-3 py-1 rounded-lg bg-navy-800 hover:bg-amber-500 hover:text-black text-slate-200 font-sans text-xs transition border border-navy-700 shadow font-semibold">
-                                        View
-                                    </button>
+                                    <div class="flex items-center justify-center gap-1.5">
+                                        <a href="https://www.tradingview.com/chart/?symbol=BINANCE:${item.clean_symbol}USDT" target="_blank" rel="noopener" class="px-2 py-1 rounded-lg bg-navy-800 hover:bg-sky-600 hover:text-white text-slate-300 font-sans text-xs transition border border-navy-700 shadow font-semibold" title="Open TradingView">
+                                            TV ↗
+                                        </a>
+                                        <button onclick="openChart('${item.symbol}')" class="px-2.5 py-1 rounded-lg bg-navy-800 hover:bg-amber-500 hover:text-black text-slate-200 font-sans text-xs transition border border-navy-700 shadow font-semibold">
+                                            View
+                                        </button>
+                                    </div>
                                 </td>
                             </tr>
                         `;
