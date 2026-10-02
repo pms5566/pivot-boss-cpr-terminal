@@ -110,7 +110,51 @@ class YahooSessionManager:
                     return self.crumb
             except Exception:
                 pass
-            return self.crumb
+    def get_dynamic_crypto_symbols(self, max_coins=250):
+        now = time.time()
+        if "DYNAMIC_CRYPTO_SYMBOLS" in self.data_cache:
+            ts, syms = self.data_cache["DYNAMIC_CRYPTO_SYMBOLS"]
+            if now - ts < 3600:
+                return syms
+
+        base_list = WATCHLISTS["crypto_all"]["symbols"]
+        symbols_set = set(base_list)
+
+        try:
+            url = 'https://api.gateio.ws/api/v4/spot/tickers'
+            r = self.session.get(url, timeout=5)
+            if r.status_code == 200:
+                data = r.json()
+                stables_and_junk = {'USDT', 'USDC', 'USD', 'BUSD', 'TUSD', 'FDUSD', 'DAI', 'EUR', 'USDE', 'PYUSD', 'PAXG', 'XAUT', 'USDY'}
+                candidates = []
+                for t in data:
+                    pair = t.get('currency_pair', '')
+                    if pair.endswith('_USDT'):
+                        base = pair.replace('_USDT', '')
+                        if base in stables_and_junk: continue
+                        if base.endswith('3L') or base.endswith('3S') or base.endswith('5L') or base.endswith('5S'): continue
+                        if (base.endswith('G') or base.endswith('ON') or base.endswith('X')) and len(base) >= 3 and any(s in base for s in ['WMT', 'HD', 'LLY', 'QQQ', 'SPY', 'TSLA', 'AAPL', 'MSFT', 'NVDA', 'AMZN', 'GOOG', 'META', 'GLD', 'SLV', 'COIN', 'MSTR', 'PLTR', 'COST', 'HOOD', 'SNDK', 'BRK', 'AVGO']):
+                            continue
+                        if not base.isascii() or not base.isalnum(): continue
+                        try:
+                            vol = float(t.get('quote_volume', 0))
+                            price = float(t.get('last', 0))
+                            if vol >= 200000 and price > 0:
+                                candidates.append((f"{base}-USD", vol))
+                        except Exception:
+                            pass
+                candidates.sort(key=lambda x: x[1], reverse=True)
+                for sym, _ in candidates[:max_coins]:
+                    symbols_set.add(sym)
+        except Exception:
+            pass
+
+        final_list = list(symbols_set)
+        priority = ["BTC-USD", "ETH-USD", "SOL-USD", "BNB-USD", "XRP-USD", "DOGE-USD", "ADA-USD", "AVAX-USD", "SUI-USD", "NEAR-USD", "PEPE-USD", "LINK-USD", "LTC-USD"]
+        sorted_final = [p for p in priority if p in final_list] + [s for s in final_list if s not in priority]
+        
+        self.data_cache["DYNAMIC_CRYPTO_SYMBOLS"] = (now, sorted_final)
+        return sorted_final
 
     def fetch_crypto_direct(self, symbol):
         """
@@ -1128,11 +1172,15 @@ def api_scan():
     market = request.args.get("market", "india_all")
     timeframe = request.args.get("timeframe", "daily")
     mode = request.args.get("mode", "developing")
-    watchlist_info = WATCHLISTS.get(market, WATCHLISTS["india_all"])
-    symbols = watchlist_info["symbols"]
+    if market == "crypto_all":
+        symbols = YAHOO_MGR.get_dynamic_crypto_symbols(250)
+    else:
+        watchlist_info = WATCHLISTS.get(market, WATCHLISTS["india_all"])
+        symbols = watchlist_info["symbols"]
     
     results = []
-    with ThreadPoolExecutor(max_workers=10) as executor:
+    workers = 16 if market == "crypto_all" else 10
+    with ThreadPoolExecutor(max_workers=workers) as executor:
         if strategy == "virgin_cpr":
             futures = [executor.submit(process_virgin_cpr_daily, sym, 10) for sym in symbols]
             for f in futures:
