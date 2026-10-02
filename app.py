@@ -1,17 +1,13 @@
 #!/usr/bin/env python3
 """
-Pivot Boss - Multi-Timeframe Inside Value CPR Terminal
-Supports:
-1. Timeframes:
-   - 🗓️ Monthly CPR
-   - ⚡ Daily CPR
-2. Modes:
-   - 📍 Active Inside Value (Current Period vs Prior Period)
-   - 🔮 Developing Inside Value (Next Period Forecast vs Current Period)
-3. Markets:
-   - 🇮🇳 Indian Equities (NSE F&O / Top 100)
-   - 🇺🇸 US Russell 2000 (Small-Caps & IWM Leaders)
-   - 🪙 Crypto (Top 110+ Coins)
+Pivot Boss - Multi-Strategy CPR Terminal
+Strategies:
+1. 🎯 Inside Value CPR (Multi-Timeframe: Daily & Monthly, Active & Developing)
+2. 🛡️ Daily Virgin CPR (Untested CPR formed within max 10 trading days)
+Markets:
+- 🇮🇳 Indian Equities (NSE F&O / Top 100)
+- 🇺🇸 US Russell 2000 (Small-Caps & IWM Leaders)
+- 🪙 Crypto (Top 110+ Coins)
 """
 
 import time
@@ -220,10 +216,7 @@ def calculate_cpr_and_pivots(h, l, c, decimals=2):
     }
 
 def process_cpr_setup(symbol, timeframe="monthly", mode="active"):
-    """
-    timeframe: 'monthly' or 'daily'
-    mode: 'active' or 'developing'
-    """
+    """Inside Value CPR calculation"""
     monthly_bars, daily_candles = YAHOO_MGR.fetch_market_bars(symbol)
     
     if timeframe == "monthly":
@@ -239,9 +232,7 @@ def process_cpr_setup(symbol, timeframe="monthly", mode="active"):
         dec = 4 if is_crypto and last_price < 1.0 else (3 if is_crypto and last_price < 10.0 else 2)
         
         if mode == "developing":
-            # Target is Developing Next Month CPR (from Current MTD data)
             cpr_target = calculate_cpr_and_pivots(current_m['high'], current_m['low'], current_m['close'], dec)
-            # Base is Current Month CPR (from Last Month data)
             cpr_base = calculate_cpr_and_pivots(last_m['high'], last_m['low'], last_m['close'], dec)
             target_label = f"Developing Next Month ({current_m['month']} MTD)"
             base_label = f"Current Month ({last_m['month']})"
@@ -250,9 +241,7 @@ def process_cpr_setup(symbol, timeframe="monthly", mode="active"):
             trigger_name_h = "MTD High (Buy)"
             trigger_name_l = "MTD Low (Sell)"
         else:
-            # Target is Current Month CPR (from Last Month data)
             cpr_target = calculate_cpr_and_pivots(last_m['high'], last_m['low'], last_m['close'], dec)
-            # Base is Previous Month CPR (from 2 Months Ago data)
             cpr_base = calculate_cpr_and_pivots(prev_m['high'], prev_m['low'], prev_m['close'], dec)
             target_label = f"Current Month ({last_m['month']})"
             base_label = f"Previous Month ({prev_m['month']})"
@@ -276,9 +265,7 @@ def process_cpr_setup(symbol, timeframe="monthly", mode="active"):
         dec = 4 if is_crypto and last_price < 1.0 else (3 if is_crypto and last_price < 10.0 else 2)
         
         if mode == "developing":
-            # Target is Developing Tomorrow's CPR (from Today's candle)
             cpr_target = calculate_cpr_and_pivots(today_c['high'], today_c['low'], today_c['close'], dec)
-            # Base is Today's CPR (from Yesterday's candle)
             cpr_base = calculate_cpr_and_pivots(yesterday_c['high'], yesterday_c['low'], yesterday_c['close'], dec)
             target_label = f"Developing Tomorrow ({today_c['date']})"
             base_label = f"Today ({yesterday_c['date']})"
@@ -287,9 +274,7 @@ def process_cpr_setup(symbol, timeframe="monthly", mode="active"):
             trigger_name_h = "Today High (Buy)"
             trigger_name_l = "Today Low (Sell)"
         else:
-            # Target is Today's CPR (from Yesterday's candle)
             cpr_target = calculate_cpr_and_pivots(yesterday_c['high'], yesterday_c['low'], yesterday_c['close'], dec)
-            # Base is Yesterday's CPR (from Day Before candle)
             cpr_base = calculate_cpr_and_pivots(day_before_c['high'], day_before_c['low'], day_before_c['close'], dec)
             target_label = f"Today ({yesterday_c['date']})"
             base_label = f"Yesterday ({day_before_c['date']})"
@@ -335,6 +320,7 @@ def process_cpr_setup(symbol, timeframe="monthly", mode="active"):
     return {
         "symbol": symbol,
         "clean_symbol": clean_symbol,
+        "strategy": "inside_value",
         "timeframe": timeframe,
         "mode": mode,
         "target_label": target_label,
@@ -354,13 +340,103 @@ def process_cpr_setup(symbol, timeframe="monthly", mode="active"):
         "candles": daily_candles[-60:]
     }
 
+def process_virgin_cpr_daily(symbol, max_days=10):
+    """
+    Scans for Daily Virgin CPRs formed within the last max_days completed sessions
+    that have NEVER been tested or touched by any subsequent candle up to LTP.
+    """
+    monthly_bars, daily_candles = YAHOO_MGR.fetch_market_bars(symbol)
+    if len(daily_candles) < max_days + 2:
+        return []
+
+    n = len(daily_candles)
+    current_candle = daily_candles[-1]
+    ltp = current_candle['close']
+    if ltp < 0.001:
+        return []
+
+    is_crypto = "-USD" in symbol
+    dec = 4 if is_crypto and ltp < 1.0 else (3 if is_crypto and ltp < 10.0 else 2)
+    clean_symbol = symbol.replace(".NS", "").replace("^", "")
+
+    prev_c_for_change = daily_candles[-2]
+    chg = round(ltp - prev_c_for_change['close'], dec)
+    chg_pct = round((chg / prev_c_for_change['close']) * 100.0, 2) if prev_c_for_change['close'] > 0 else 0.0
+
+    virgin_setups = []
+    # Check candidate sessions from (n - 1 - max_days) to (n - 2)
+    for i in range(max(1, n - 1 - max_days), n - 1):
+        prev_c = daily_candles[i - 1]
+        session_c = daily_candles[i]
+
+        cpr = calculate_cpr_and_pivots(prev_c['high'], prev_c['low'], prev_c['close'], dec)
+        top = cpr['cpr_top']
+        bot = cpr['cpr_bot']
+
+        # 1. Did price touch the CPR on session i itself?
+        # A Virgin CPR means price NEVER touched [bot, top] during session i.
+        if not (session_c['low'] > top or session_c['high'] < bot):
+            continue
+
+        # 2. Has any subsequent day from (i + 1) up to the current day (n - 1) touched [bot, top]?
+        is_still_untested = True
+        for k in range(i + 1, n):
+            ck = daily_candles[k]
+            if ck['high'] >= bot and ck['low'] <= top:
+                is_still_untested = False
+                break
+
+        if is_still_untested:
+            days_ago = (n - 1) - i
+            p = cpr['p']
+            dist_pct = round(((ltp - p) / p) * 100.0, 2)
+            
+            if ltp > top:
+                role = "Demand / Support"
+                role_class = "text-emerald-400 font-semibold"
+                role_badge = "bg-emerald-500/20 text-emerald-300 border-emerald-500/40"
+                plan = f"Bounce Candidate: Untested Support at [{bot} - {top}]"
+            elif ltp < bot:
+                role = "Supply / Resistance"
+                role_class = "text-rose-400 font-semibold"
+                role_badge = "bg-rose-500/20 text-rose-300 border-rose-500/40"
+                plan = f"Rejection Candidate: Untested Resistance at [{bot} - {top}]"
+            else:
+                role = "Currently Testing!"
+                role_class = "text-amber-400 font-semibold"
+                role_badge = "bg-amber-500/20 text-amber-300 border-amber-500/40"
+                plan = f"Live Test in Progress at [{bot} - {top}]"
+
+            virgin_setups.append({
+                "symbol": symbol,
+                "clean_symbol": clean_symbol,
+                "strategy": "virgin_cpr",
+                "virgin_date": session_c['date'],
+                "days_ago": days_ago,
+                "ltp": round(ltp, dec),
+                "change": chg,
+                "change_pct": chg_pct,
+                "curr_cpr": cpr,
+                "dist_pct": dist_pct,
+                "abs_dist": abs(dist_pct),
+                "role": role,
+                "role_class": role_class,
+                "role_badge": role_badge,
+                "plan": plan,
+                "pm_high": round(session_c['high'], dec),
+                "pm_low": round(session_c['low'], dec),
+                "candles": daily_candles[-60:]
+            })
+
+    return virgin_setups
+
 DASHBOARD_HTML = """
 <!DOCTYPE html>
 <html lang="en" class="dark">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Pivot Boss Inside Value CPR Terminal • Multi-Timeframe</title>
+    <title>Pivot Boss CPR Terminal • Inside Value & Virgin CPR</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
@@ -397,38 +473,51 @@ DASHBOARD_HTML = """
         <div class="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-4">
             <div class="flex items-center gap-3">
                 <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-amber-500 via-orange-500 to-rose-500 flex items-center justify-center shadow-lg shadow-orange-500/25 ring-1 ring-white/20">
-                    <span class="text-black font-black font-mono text-xl" id="logo-letter">D</span>
+                    <span class="text-black font-black font-mono text-xl" id="logo-letter">V</span>
                 </div>
                 <div>
                     <h1 class="text-lg font-bold tracking-tight bg-gradient-to-r from-white via-amber-200 to-orange-400 bg-clip-text text-transparent flex items-center gap-2">
-                        INSIDE VALUE CPR TERMINAL
-                        <span id="header-mode-badge" class="px-2 py-0.5 rounded text-[10px] bg-purple-500/20 text-purple-300 font-mono font-medium border border-purple-500/30">DAILY DEVELOPING</span>
+                        PIVOT BOSS CPR TERMINAL
+                        <span id="header-mode-badge" class="px-2 py-0.5 rounded text-[10px] bg-rose-500/20 text-rose-300 font-mono font-medium border border-rose-500/30">VIRGIN CPR (≤10D)</span>
                     </h1>
-                    <p class="text-xs text-slate-400">Institutional Volatility Compression & Breakout Forecast Engine</p>
+                    <p class="text-xs text-slate-400">Institutional Breakout & Untested Liquidity Magnet Engine</p>
                 </div>
             </div>
 
-            <!-- Controls: Timeframe, Mode, Market -->
+            <!-- Controls: Strategy, Timeframe, Mode, Market -->
             <div class="flex flex-wrap items-center gap-3">
                 
-                <!-- Timeframe Selector -->
+                <!-- Strategy Selector -->
                 <div class="flex bg-navy-950 p-1 rounded-xl border border-navy-700 text-xs font-medium shadow-inner">
-                    <button onclick="setTimeframe('daily')" id="btn-tf-daily" class="px-3 py-1.5 rounded-lg transition-all text-black bg-amber-400 font-bold shadow">
-                        ⚡ Daily CPR
+                    <button onclick="setStrategy('virgin_cpr')" id="btn-strat-virgin" class="px-3 py-1.5 rounded-lg transition-all text-white bg-rose-600 font-bold shadow">
+                        🛡️ Daily Virgin CPR (≤10d)
                     </button>
-                    <button onclick="setTimeframe('monthly')" id="btn-tf-monthly" class="px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white">
-                        🗓️ Monthly CPR
+                    <button onclick="setStrategy('inside_value')" id="btn-strat-inside" class="px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white">
+                        🎯 Inside Value CPR
                     </button>
                 </div>
 
-                <!-- Mode Selector -->
-                <div class="flex bg-navy-950 p-1 rounded-xl border border-navy-700 text-xs font-medium shadow-inner">
-                    <button onclick="setMode('developing')" id="btn-mode-dev" class="px-3 py-1.5 rounded-lg transition-all text-white bg-purple-600 font-bold shadow">
-                        🔮 Developing (Next)
-                    </button>
-                    <button onclick="setMode('active')" id="btn-mode-act" class="px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white">
-                        📍 Active (Current)
-                    </button>
+                <!-- Sub-Controls for Inside Value (Hidden when Virgin CPR is active) -->
+                <div id="inside-value-controls" class="hidden flex items-center gap-2">
+                    <!-- Timeframe Selector -->
+                    <div class="flex bg-navy-950 p-1 rounded-xl border border-navy-700 text-xs font-medium shadow-inner">
+                        <button onclick="setTimeframe('daily')" id="btn-tf-daily" class="px-3 py-1.5 rounded-lg transition-all text-black bg-amber-400 font-bold shadow">
+                            ⚡ Daily
+                        </button>
+                        <button onclick="setTimeframe('monthly')" id="btn-tf-monthly" class="px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white">
+                            🗓️ Monthly
+                        </button>
+                    </div>
+
+                    <!-- Mode Selector -->
+                    <div class="flex bg-navy-950 p-1 rounded-xl border border-navy-700 text-xs font-medium shadow-inner">
+                        <button onclick="setMode('developing')" id="btn-mode-dev" class="px-3 py-1.5 rounded-lg transition-all text-white bg-purple-600 font-bold shadow">
+                            🔮 Developing
+                        </button>
+                        <button onclick="setMode('active')" id="btn-mode-act" class="px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white">
+                            📍 Active
+                        </button>
+                    </div>
                 </div>
 
                 <!-- Market Selector -->
@@ -456,51 +545,41 @@ DASHBOARD_HTML = """
     <main class="max-w-7xl mx-auto px-6 py-6 w-full flex-1 flex flex-col gap-6">
 
         <!-- Strategy Alert Banner -->
-        <div class="p-4 rounded-2xl bg-gradient-to-r from-amber-950/40 via-navy-900 to-navy-900 border border-amber-500/30 flex flex-col md:flex-row items-start md:items-center justify-between gap-4 shadow-lg">
+        <div class="p-4 rounded-2xl bg-gradient-to-r from-navy-900 via-navy-900 to-navy-950 border border-rose-500/30 flex flex-col md:flex-row items-start md:items-center justify-between gap-4 shadow-lg" id="banner-card">
             <div class="flex items-start gap-3">
-                <div class="text-2xl mt-0.5" id="banner-icon">⚡</div>
+                <div class="text-2xl mt-0.5" id="banner-icon">🛡️</div>
                 <div>
-                    <h3 class="text-sm font-bold text-amber-300" id="banner-title">Developing Daily Inside Value CPR (Tomorrow's Forecast):</h3>
+                    <h3 class="text-sm font-bold text-rose-300" id="banner-title">Daily Virgin CPR (Untested Liquidity Magnets ≤ 10 Days Old):</h3>
                     <p class="text-xs text-slate-300 mt-0.5" id="banner-desc">
-                        Based on today's price range, these assets are <strong>forming an Inside Value CPR for TOMORROW</strong>! 
-                        Prepare for tomorrow's open: <strong>🟢 Buy Trigger</strong> on breakout above Today's High, <strong>🔴 Short Trigger</strong> on breakdown below Today's Low.
+                        Price has **never touched these CPR pivot ranges** since formation! Virgin CPRs below price act as **Major Support/Demand Zones**, while Virgin CPRs above price act as **Major Resistance/Supply Zones**.
                     </p>
                 </div>
             </div>
             <div class="shrink-0 flex items-center gap-2 font-mono text-xs bg-navy-950/80 px-3 py-2 rounded-xl border border-navy-700">
-                <span class="text-slate-400">Verified Setups:</span>
-                <span id="coils-total" class="text-amber-400 font-bold text-base">0</span>
+                <span class="text-slate-400">Untested Setups:</span>
+                <span id="coils-total" class="text-rose-400 font-bold text-base">0</span>
             </div>
         </div>
 
         <!-- Table View -->
         <div class="glass rounded-2xl border border-navy-700/80 overflow-hidden shadow-2xl flex-1 flex flex-col">
             <div class="p-3.5 bg-navy-900/90 border-b border-navy-700 flex items-center justify-between gap-4">
-                <span class="text-xs font-bold uppercase tracking-wider text-amber-400 flex items-center gap-2" id="table-title">
-                    🔥 Verified Inside Value Setups (Sorted by Compression %)
+                <span class="text-xs font-bold uppercase tracking-wider text-rose-400 flex items-center gap-2" id="table-title">
+                    🛡️ Verified Daily Virgin CPRs (Sorted by Nearest Distance to LTP)
                 </span>
-                <input type="text" id="search-input" onkeyup="renderTable()" placeholder="Search symbol..." class="bg-navy-950 border border-navy-700 text-slate-200 text-xs rounded-xl px-3.5 py-1.5 focus:outline-none focus:border-amber-500 w-52 transition shadow-inner">
+                <input type="text" id="search-input" onkeyup="renderTable()" placeholder="Search symbol..." class="bg-navy-950 border border-navy-700 text-slate-200 text-xs rounded-xl px-3.5 py-1.5 focus:outline-none focus:border-rose-500 w-52 transition shadow-inner">
             </div>
 
             <div class="overflow-x-auto flex-1">
                 <table class="w-full text-left text-xs border-collapse">
-                    <thead>
-                        <tr class="bg-navy-950/90 border-b border-navy-700 text-slate-400 font-semibold tracking-wider uppercase">
-                            <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('clean_symbol')">Asset Symbol ↕</th>
-                            <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('ltp')">Current LTP & Change ↕</th>
-                            <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('compression_pct')">Compression % ↕</th>
-                            <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('curr_width')">Target CPR Band (BC • P • TC) ↕</th>
-                            <th class="py-3.5 px-4">Base CPR Band (BC • P • TC)</th>
-                            <th class="py-3.5 px-4">Breakout Triggers (High / Low)</th>
-                            <th class="py-3.5 px-4">Target Pivots (S1 • R1)</th>
-                            <th class="py-3.5 px-4 text-center">Chart</th>
-                        </tr>
+                    <thead id="table-head">
+                        <!-- Rendered dynamically -->
                     </thead>
                     <tbody id="table-body" class="divide-y divide-navy-700/50 font-mono">
                         <tr>
                             <td colspan="8" class="text-center py-16 text-slate-400 font-sans">
-                                <div class="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-amber-500 mb-3"></div>
-                                <p>Scanning market universe for verified Inside Value setups...</p>
+                                <div class="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-rose-500 mb-3"></div>
+                                <p>Scanning market universe for verified Daily Virgin CPRs...</p>
                             </td>
                         </tr>
                     </tbody>
@@ -516,81 +595,103 @@ DASHBOARD_HTML = """
             <div class="flex items-center justify-between px-6 py-4 border-b border-navy-700 bg-navy-950/80">
                 <div class="flex items-center gap-3">
                     <span id="modal-symbol" class="text-lg font-bold text-white font-mono"></span>
-                    <span id="modal-compression" class="px-2.5 py-1 rounded-md text-xs font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/40"></span>
+                    <span id="modal-badge" class="px-2.5 py-1 rounded-md text-xs font-semibold"></span>
                 </div>
                 <button onclick="closeModal()" class="text-slate-400 hover:text-white p-2 rounded-lg hover:bg-navy-800 transition">
                     <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
                 </button>
             </div>
             <div class="p-4 grid grid-cols-2 sm:grid-cols-4 gap-3 bg-navy-950/60 border-b border-navy-700 text-xs">
-                <div><span class="text-slate-400">Target CPR Top (TC):</span> <span id="modal-tc" class="font-mono text-blue-400 font-semibold"></span></div>
-                <div><span class="text-slate-400">Target Pivot (P):</span> <span id="modal-p" class="font-mono text-purple-400 font-semibold"></span></div>
-                <div><span class="text-slate-400">Target CPR Bot (BC):</span> <span id="modal-bc" class="font-mono text-blue-400 font-semibold"></span></div>
-                <div><span class="text-slate-400">Key Triggers (High / Low):</span> <span id="modal-pmhl" class="font-mono text-amber-400 font-semibold"></span></div>
+                <div><span class="text-slate-400">Virgin TC:</span> <span id="modal-tc" class="font-mono text-blue-400 font-semibold"></span></div>
+                <div><span class="text-slate-400">Virgin Pivot (P):</span> <span id="modal-p" class="font-mono text-purple-400 font-semibold"></span></div>
+                <div><span class="text-slate-400">Virgin BC:</span> <span id="modal-bc" class="font-mono text-blue-400 font-semibold"></span></div>
+                <div><span class="text-slate-400">Status / Distance:</span> <span id="modal-info" class="font-mono text-amber-400 font-semibold"></span></div>
             </div>
             <div id="chart-container" class="w-full h-96 p-2 bg-navy-950"></div>
         </div>
     </div>
 
     <script>
+        let currentStrategy = 'virgin_cpr'; // 'virgin_cpr' or 'inside_value'
         let currentTimeframe = 'daily';
         let currentMode = 'developing';
         let currentMarket = 'india_all';
-        let currentSort = { column: 'compression_pct', ascending: false };
+        let currentSort = { column: 'abs_dist', ascending: true };
         let scanData = [];
         let chartInstance = null;
 
         function updateUIState() {
-            // Timeframe buttons
-            const btnDaily = document.getElementById('btn-tf-daily');
-            const btnMonthly = document.getElementById('btn-tf-monthly');
-            if (currentTimeframe === 'daily') {
-                btnDaily.className = 'px-3 py-1.5 rounded-lg transition-all text-black bg-amber-400 font-bold shadow';
-                btnMonthly.className = 'px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white';
-                document.getElementById('logo-letter').innerText = 'D';
-            } else {
-                btnMonthly.className = 'px-3 py-1.5 rounded-lg transition-all text-black bg-amber-400 font-bold shadow';
-                btnDaily.className = 'px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white';
-                document.getElementById('logo-letter').innerText = 'M';
-            }
-
-            // Mode buttons
-            const btnDev = document.getElementById('btn-mode-dev');
-            const btnAct = document.getElementById('btn-mode-act');
-            if (currentMode === 'developing') {
-                btnDev.className = 'px-3 py-1.5 rounded-lg transition-all text-white bg-purple-600 font-bold shadow';
-                btnAct.className = 'px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white';
-            } else {
-                btnAct.className = 'px-3 py-1.5 rounded-lg transition-all text-white bg-emerald-600 font-bold shadow';
-                btnDev.className = 'px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white';
-            }
-
-            // Header Badge & Banner text
+            const btnVirgin = document.getElementById('btn-strat-virgin');
+            const btnInside = document.getElementById('btn-strat-inside');
+            const ivControls = document.getElementById('inside-value-controls');
             const badge = document.getElementById('header-mode-badge');
+            const bannerCard = document.getElementById('banner-card');
             const bannerTitle = document.getElementById('banner-title');
             const bannerDesc = document.getElementById('banner-desc');
+            const bannerIcon = document.getElementById('banner-icon');
             const tableTitle = document.getElementById('table-title');
+            const logo = document.getElementById('logo-letter');
 
-            const tfName = currentTimeframe === 'daily' ? 'DAILY' : 'MONTHLY';
-            const modeName = currentMode === 'developing' ? 'DEVELOPING (NEXT)' : 'ACTIVE (CURRENT)';
-            badge.innerText = `${tfName} • ${modeName}`;
+            if (currentStrategy === 'virgin_cpr') {
+                btnVirgin.className = 'px-3 py-1.5 rounded-lg transition-all text-white bg-rose-600 font-bold shadow';
+                btnInside.className = 'px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white';
+                ivControls.classList.add('hidden');
+                
+                logo.innerText = 'V';
+                badge.innerText = 'DAILY VIRGIN CPR (≤10D)';
+                badge.className = 'px-2 py-0.5 rounded text-[10px] bg-rose-500/20 text-rose-300 font-mono font-medium border border-rose-500/30';
 
-            if (currentTimeframe === 'daily' && currentMode === 'developing') {
-                bannerTitle.innerText = "Developing Daily Inside Value CPR (Tomorrow's Forecast):";
-                bannerDesc.innerHTML = "Based on today's price range, these assets are <strong>forming an Inside Value CPR for TOMORROW</strong>! Buy trigger on break of Today's High, short trigger on break of Today's Low.";
-            } else if (currentTimeframe === 'daily' && currentMode === 'active') {
-                bannerTitle.innerText = "Active Daily Inside Value CPR (Today vs Yesterday):";
-                bannerDesc.innerHTML = "These assets have <strong>Today's CPR strictly inside Yesterday's CPR</strong>. High volatility expansion is expected today!";
-            } else if (currentTimeframe === 'monthly' && currentMode === 'developing') {
-                bannerTitle.innerText = "Developing Monthly Inside Value CPR (Next Month MTD Forecast):";
-                bannerDesc.innerHTML = "Based on Month-to-Date data, these assets are <strong>forming an Inside Value CPR for NEXT MONTH</strong>! Early warning for multi-week mega breakout setups.";
+                bannerCard.className = 'p-4 rounded-2xl bg-gradient-to-r from-navy-900 via-navy-900 to-navy-950 border border-rose-500/30 flex flex-col md:flex-row items-start md:items-center justify-between gap-4 shadow-lg';
+                bannerIcon.innerText = '🛡️';
+                bannerTitle.className = 'text-sm font-bold text-rose-300';
+                bannerTitle.innerText = 'Daily Virgin CPR (Untested Liquidity Magnets ≤ 10 Days Old):';
+                bannerDesc.innerHTML = 'Price has <strong>never touched these CPR pivot ranges</strong> since formation! Untested CPRs below price act as <strong>Major Demand/Support</strong>, and untested CPRs above price act as <strong>Major Supply/Resistance</strong>.';
+                tableTitle.innerText = '🛡️ Verified Daily Virgin CPRs (Sorted by Nearest Distance to LTP)';
+                tableTitle.className = 'text-xs font-bold uppercase tracking-wider text-rose-400 flex items-center gap-2';
             } else {
-                bannerTitle.innerText = "Active Monthly Inside Value CPR (Current Month vs Prev Month):";
-                bannerDesc.innerHTML = "These assets are in <strong>active multi-week compression</strong>. Trade breakouts above PMH or breakdowns below PML.";
-            }
-            tableTitle.innerText = `🔥 Verified ${tfName} ${modeName} Setups (Sorted by Compression %)`;
+                btnInside.className = 'px-3 py-1.5 rounded-lg transition-all text-black bg-amber-400 font-bold shadow';
+                btnVirgin.className = 'px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white';
+                ivControls.classList.remove('hidden');
 
-            // Markets
+                // Timeframe buttons
+                const btnDaily = document.getElementById('btn-tf-daily');
+                const btnMonthly = document.getElementById('btn-tf-monthly');
+                if (currentTimeframe === 'daily') {
+                    btnDaily.className = 'px-3 py-1.5 rounded-lg transition-all text-black bg-amber-400 font-bold shadow';
+                    btnMonthly.className = 'px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white';
+                    logo.innerText = 'D';
+                } else {
+                    btnMonthly.className = 'px-3 py-1.5 rounded-lg transition-all text-black bg-amber-400 font-bold shadow';
+                    btnDaily.className = 'px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white';
+                    logo.innerText = 'M';
+                }
+
+                // Mode buttons
+                const btnDev = document.getElementById('btn-mode-dev');
+                const btnAct = document.getElementById('btn-mode-act');
+                if (currentMode === 'developing') {
+                    btnDev.className = 'px-3 py-1.5 rounded-lg transition-all text-white bg-purple-600 font-bold shadow';
+                    btnAct.className = 'px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white';
+                } else {
+                    btnAct.className = 'px-3 py-1.5 rounded-lg transition-all text-white bg-emerald-600 font-bold shadow';
+                    btnDev.className = 'px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white';
+                }
+
+                const tfName = currentTimeframe === 'daily' ? 'DAILY' : 'MONTHLY';
+                const modeName = currentMode === 'developing' ? 'DEVELOPING (NEXT)' : 'ACTIVE (CURRENT)';
+                badge.innerText = `${tfName} • ${modeName}`;
+                badge.className = 'px-2 py-0.5 rounded text-[10px] bg-amber-500/20 text-amber-300 font-mono font-medium border border-amber-500/30';
+
+                bannerCard.className = 'p-4 rounded-2xl bg-gradient-to-r from-amber-950/40 via-navy-900 to-navy-900 border border-amber-500/30 flex flex-col md:flex-row items-start md:items-center justify-between gap-4 shadow-lg';
+                bannerIcon.innerText = '🎯';
+                bannerTitle.className = 'text-sm font-bold text-amber-300';
+                bannerTitle.innerText = `${tfName} ${modeName} Inside Value CPR Setup:`;
+                bannerDesc.innerHTML = 'These assets are in <strong>verified volatility compression</strong>. Trade breakouts above PMH/Today High or breakdowns below PML/Today Low.';
+                tableTitle.innerText = `🔥 Verified ${tfName} ${modeName} Inside Value Setups`;
+                tableTitle.className = 'text-xs font-bold uppercase tracking-wider text-amber-400 flex items-center gap-2';
+            }
+
+            // Market selector styles
             ['india', 'us', 'crypto'].forEach(m => {
                 const btn = document.getElementById(`btn-${m}`);
                 if (btn) {
@@ -603,6 +704,17 @@ DASHBOARD_HTML = """
                     }
                 }
             });
+        }
+
+        function setStrategy(strat) {
+            currentStrategy = strat;
+            if (strat === 'virgin_cpr') {
+                currentSort = { column: 'abs_dist', ascending: true };
+            } else {
+                currentSort = { column: 'compression_pct', ascending: false };
+            }
+            updateUIState();
+            runScan();
         }
 
         function setTimeframe(tf) {
@@ -625,20 +737,50 @@ DASHBOARD_HTML = """
 
         async function runScan() {
             const tbody = document.getElementById('table-body');
+            const thead = document.getElementById('table-head');
             const icon = document.getElementById('refresh-icon');
             icon.classList.add('animate-spin');
             
+            // Set Table Head according to strategy
+            if (currentStrategy === 'virgin_cpr') {
+                thead.innerHTML = `
+                    <tr class="bg-navy-950/90 border-b border-navy-700 text-slate-400 font-semibold tracking-wider uppercase text-[11px]">
+                        <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('clean_symbol')">Asset Symbol ↕</th>
+                        <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('ltp')">Current LTP & Chg ↕</th>
+                        <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('days_ago')">Virgin Date & Age ↕</th>
+                        <th class="py-3.5 px-4">Untested CPR Band (BC • P • TC)</th>
+                        <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('role')">Role (Demand / Supply) ↕</th>
+                        <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('abs_dist')">Distance to LTP ↕</th>
+                        <th class="py-3.5 px-4">Trade Plan</th>
+                        <th class="py-3.5 px-4 text-center">Chart</th>
+                    </tr>
+                `;
+            } else {
+                thead.innerHTML = `
+                    <tr class="bg-navy-950/90 border-b border-navy-700 text-slate-400 font-semibold tracking-wider uppercase text-[11px]">
+                        <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('clean_symbol')">Asset Symbol ↕</th>
+                        <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('ltp')">Current LTP & Chg ↕</th>
+                        <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('compression_pct')">Compression % ↕</th>
+                        <th class="py-3.5 px-4">Target CPR Band (BC • P • TC)</th>
+                        <th class="py-3.5 px-4">Base CPR Band (BC • P • TC)</th>
+                        <th class="py-3.5 px-4">Breakout Triggers</th>
+                        <th class="py-3.5 px-4">Targets (S1 • R1)</th>
+                        <th class="py-3.5 px-4 text-center">Chart</th>
+                    </tr>
+                `;
+            }
+
             tbody.innerHTML = `
                 <tr>
                     <td colspan="8" class="text-center py-16 text-slate-400 font-sans">
-                        <div class="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-amber-500 mb-3"></div>
-                        <p>Scanning ${currentMarket.toUpperCase()} (${currentTimeframe.toUpperCase()} • ${currentMode.toUpperCase()})...</p>
+                        <div class="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-rose-500 mb-3"></div>
+                        <p>Scanning ${currentMarket.toUpperCase()} for ${currentStrategy === 'virgin_cpr' ? 'Daily Virgin CPRs' : 'Inside Value CPRs'}...</p>
                     </td>
                 </tr>
             `;
 
             try {
-                const response = await fetch(`/api/scan?market=${currentMarket}&timeframe=${currentTimeframe}&mode=${currentMode}`);
+                const response = await fetch(`/api/scan?strategy=${currentStrategy}&market=${currentMarket}&timeframe=${currentTimeframe}&mode=${currentMode}`);
                 const data = await response.json();
                 scanData = data.results || [];
                 document.getElementById('coils-total').innerText = scanData.length;
@@ -661,7 +803,7 @@ DASHBOARD_HTML = """
                 currentSort.ascending = !currentSort.ascending;
             } else {
                 currentSort.column = column;
-                currentSort.ascending = false;
+                currentSort.ascending = (column === 'abs_dist' || column === 'days_ago') ? true : false;
             }
             renderTable();
         }
@@ -681,10 +823,14 @@ DASHBOARD_HTML = """
                     valA = a.clean_symbol; valB = b.clean_symbol;
                 } else if (currentSort.column === 'ltp') {
                     valA = a.ltp; valB = b.ltp;
+                } else if (currentSort.column === 'days_ago') {
+                    valA = a.days_ago || 0; valB = b.days_ago || 0;
+                } else if (currentSort.column === 'abs_dist') {
+                    valA = a.abs_dist || 0; valB = b.abs_dist || 0;
                 } else if (currentSort.column === 'compression_pct') {
-                    valA = a.compression_pct; valB = b.compression_pct;
-                } else if (currentSort.column === 'curr_width') {
-                    valA = a.curr_cpr.cpr_width_pct; valB = b.curr_cpr.cpr_width_pct;
+                    valA = a.compression_pct || 0; valB = b.compression_pct || 0;
+                } else if (currentSort.column === 'role') {
+                    valA = a.role || ''; valB = b.role || '';
                 }
                 if (valA < valB) return currentSort.ascending ? -1 : 1;
                 if (valA > valB) return currentSort.ascending ? 1 : -1;
@@ -697,71 +843,124 @@ DASHBOARD_HTML = """
                     <tr>
                         <td colspan="8" class="text-center py-16 text-slate-400 font-sans">
                             <div class="text-3xl mb-2">🔍</div>
-                            <p class="text-sm font-semibold text-slate-300">No Inside Value setups for this selection right now.</p>
-                            <p class="text-xs text-slate-500 mt-1">Try switching between Daily/Monthly or Active/Developing modes.</p>
+                            <p class="text-sm font-semibold text-slate-300">No matching setups found right now.</p>
+                            <p class="text-xs text-slate-500 mt-1">Try switching market or strategy.</p>
                         </td>
                     </tr>
                 `;
                 return;
             }
 
-            tbody.innerHTML = filtered.map(item => {
-                const chgColor = item.change >= 0 ? 'text-emerald-400' : 'text-rose-400';
-                const chgSign = item.change >= 0 ? '+' : '';
-                return `
-                    <tr class="hover:bg-navy-800/80 transition group">
-                        <td class="py-3.5 px-4">
-                            <div class="font-bold text-white text-sm tracking-tight">${item.clean_symbol}</div>
-                            <div class="text-[10px] text-slate-500 font-sans">${item.symbol}</div>
-                        </td>
-                        <td class="py-3.5 px-4">
-                            <div class="font-bold text-slate-100">${item.ltp.toLocaleString()}</div>
-                            <div class="${chgColor} text-[11px] font-sans font-medium">${chgSign}${item.change} (${chgSign}${item.change_pct}%)</div>
-                        </td>
-                        <td class="py-3.5 px-4">
-                            <span class="inline-flex items-center px-2.5 py-1 rounded-md text-[11px] font-semibold border ${item.quality_tag.badge} font-sans">
-                                ⚡ -${item.compression_pct}% Compressed
-                            </span>
-                            <div class="${item.position_status.class} text-[10px] font-sans mt-0.5">${item.position_status.text}</div>
-                        </td>
-                        <td class="py-3.5 px-4 text-[11px]">
-                            <div class="text-slate-200 font-semibold"><span class="text-blue-400">${item.curr_cpr.cpr_bot}</span> • <span class="text-purple-400 font-bold">${item.curr_cpr.p}</span> • <span class="text-blue-400">${item.curr_cpr.cpr_top}</span></div>
-                            <div class="text-[10px] text-amber-400 font-sans mt-0.5 font-medium">${item.target_label} (Width: ${item.curr_cpr.cpr_width_pct}%)</div>
-                        </td>
-                        <td class="py-3.5 px-4 text-[11px]">
-                            <div class="text-slate-400"><span class="text-slate-500">${item.prev_cpr.cpr_bot}</span> • <span class="text-slate-400">${item.prev_cpr.p}</span> • <span class="text-slate-500">${item.prev_cpr.cpr_top}</span></div>
-                            <div class="text-[10px] text-slate-500 font-sans mt-0.5">${item.base_label} (Width: ${item.prev_cpr.cpr_width_pct}%)</div>
-                        </td>
-                        <td class="py-3.5 px-4 text-[11px]">
-                            <div><span class="text-slate-400 font-sans">${item.trigger_name_h}:</span> <span class="text-emerald-400 font-bold">${item.pm_high}</span></div>
-                            <div><span class="text-slate-400 font-sans">${item.trigger_name_l}:</span> <span class="text-rose-400 font-bold">${item.pm_low}</span></div>
-                        </td>
-                        <td class="py-3.5 px-4 text-[11px]">
-                            <div><span class="text-slate-400 font-sans">R1:</span> <span class="text-emerald-400 font-medium">${item.curr_cpr.r1}</span></div>
-                            <div><span class="text-slate-400 font-sans">S1:</span> <span class="text-rose-400 font-medium">${item.curr_cpr.s1}</span></div>
-                        </td>
-                        <td class="py-3.5 px-4 text-center">
-                            <button onclick="openChart('${item.symbol}')" class="px-3 py-1 rounded-lg bg-navy-800 hover:bg-amber-500 hover:text-black text-slate-200 font-sans text-xs transition border border-navy-700 shadow font-semibold">
-                                View
-                            </button>
-                        </td>
-                    </tr>
-                `;
-            }).join('');
+            if (currentStrategy === 'virgin_cpr') {
+                tbody.innerHTML = filtered.map(item => {
+                    const chgColor = item.change >= 0 ? 'text-emerald-400' : 'text-rose-400';
+                    const chgSign = item.change >= 0 ? '+' : '';
+                    const distColor = item.dist_pct > 0 ? 'text-emerald-400' : 'text-rose-400';
+                    return `
+                        <tr class="hover:bg-navy-800/80 transition group">
+                            <td class="py-3.5 px-4">
+                                <div class="font-bold text-white text-sm tracking-tight">${item.clean_symbol}</div>
+                                <div class="text-[10px] text-slate-500 font-sans">${item.symbol}</div>
+                            </td>
+                            <td class="py-3.5 px-4">
+                                <div class="font-bold text-slate-100">${item.ltp.toLocaleString()}</div>
+                                <div class="${chgColor} text-[11px] font-sans font-medium">${chgSign}${item.change} (${chgSign}${item.change_pct}%)</div>
+                            </td>
+                            <td class="py-3.5 px-4 text-[11px]">
+                                <div class="text-white font-semibold">${item.virgin_date}</div>
+                                <div class="text-rose-400 font-sans text-[10px] font-medium">${item.days_ago} ${item.days_ago === 1 ? 'day' : 'days'} ago</div>
+                            </td>
+                            <td class="py-3.5 px-4 text-[11px]">
+                                <div class="text-slate-200 font-semibold"><span class="text-blue-400">${item.curr_cpr.cpr_bot}</span> • <span class="text-purple-400 font-bold">${item.curr_cpr.p}</span> • <span class="text-blue-400">${item.curr_cpr.cpr_top}</span></div>
+                                <div class="text-[10px] text-slate-400 font-sans mt-0.5">Width: ${item.curr_cpr.cpr_width_pct}%</div>
+                            </td>
+                            <td class="py-3.5 px-4">
+                                <span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold border ${item.role_badge} font-sans">
+                                    ${item.role}
+                                </span>
+                            </td>
+                            <td class="py-3.5 px-4 text-[11px]">
+                                <div class="${distColor} font-bold">${item.dist_pct > 0 ? '+' : ''}${item.dist_pct}%</div>
+                                <div class="text-[10px] text-slate-400 font-sans">to Virgin Pivot (${item.curr_cpr.p})</div>
+                            </td>
+                            <td class="py-3.5 px-4 text-[11px] font-sans text-slate-300">
+                                ${item.plan}
+                            </td>
+                            <td class="py-3.5 px-4 text-center">
+                                <button onclick="openChart('${item.symbol}', '${item.virgin_date}')" class="px-3 py-1 rounded-lg bg-navy-800 hover:bg-rose-500 hover:text-white text-slate-200 font-sans text-xs transition border border-navy-700 shadow font-semibold">
+                                    View
+                                </button>
+                            </td>
+                        </tr>
+                    `;
+                }).join('');
+            } else {
+                tbody.innerHTML = filtered.map(item => {
+                    const chgColor = item.change >= 0 ? 'text-emerald-400' : 'text-rose-400';
+                    const chgSign = item.change >= 0 ? '+' : '';
+                    return `
+                        <tr class="hover:bg-navy-800/80 transition group">
+                            <td class="py-3.5 px-4">
+                                <div class="font-bold text-white text-sm tracking-tight">${item.clean_symbol}</div>
+                                <div class="text-[10px] text-slate-500 font-sans">${item.symbol}</div>
+                            </td>
+                            <td class="py-3.5 px-4">
+                                <div class="font-bold text-slate-100">${item.ltp.toLocaleString()}</div>
+                                <div class="${chgColor} text-[11px] font-sans font-medium">${chgSign}${item.change} (${chgSign}${item.change_pct}%)</div>
+                            </td>
+                            <td class="py-3.5 px-4">
+                                <span class="inline-flex items-center px-2.5 py-1 rounded-md text-[11px] font-semibold border ${item.quality_tag.badge} font-sans">
+                                    ⚡ -${item.compression_pct}% Compressed
+                                </span>
+                                <div class="${item.position_status.class} text-[10px] font-sans mt-0.5">${item.position_status.text}</div>
+                            </td>
+                            <td class="py-3.5 px-4 text-[11px]">
+                                <div class="text-slate-200 font-semibold"><span class="text-blue-400">${item.curr_cpr.cpr_bot}</span> • <span class="text-purple-400 font-bold">${item.curr_cpr.p}</span> • <span class="text-blue-400">${item.curr_cpr.cpr_top}</span></div>
+                                <div class="text-[10px] text-amber-400 font-sans mt-0.5 font-medium">${item.target_label}</div>
+                            </td>
+                            <td class="py-3.5 px-4 text-[11px]">
+                                <div class="text-slate-400"><span class="text-slate-500">${item.prev_cpr.cpr_bot}</span> • <span class="text-slate-400">${item.prev_cpr.p}</span> • <span class="text-slate-500">${item.prev_cpr.cpr_top}</span></div>
+                                <div class="text-[10px] text-slate-500 font-sans mt-0.5">${item.base_label}</div>
+                            </td>
+                            <td class="py-3.5 px-4 text-[11px]">
+                                <div><span class="text-slate-400 font-sans">${item.trigger_name_h}:</span> <span class="text-emerald-400 font-bold">${item.pm_high}</span></div>
+                                <div><span class="text-slate-400 font-sans">${item.trigger_name_l}:</span> <span class="text-rose-400 font-bold">${item.pm_low}</span></div>
+                            </td>
+                            <td class="py-3.5 px-4 text-[11px]">
+                                <div><span class="text-slate-400 font-sans">R1:</span> <span class="text-emerald-400 font-medium">${item.curr_cpr.r1}</span></div>
+                                <div><span class="text-slate-400 font-sans">S1:</span> <span class="text-rose-400 font-medium">${item.curr_cpr.s1}</span></div>
+                            </td>
+                            <td class="py-3.5 px-4 text-center">
+                                <button onclick="openChart('${item.symbol}')" class="px-3 py-1 rounded-lg bg-navy-800 hover:bg-amber-500 hover:text-black text-slate-200 font-sans text-xs transition border border-navy-700 shadow font-semibold">
+                                    View
+                                </button>
+                            </td>
+                        </tr>
+                    `;
+                }).join('');
+            }
         }
 
-        function openChart(symbol) {
-            const item = scanData.find(s => s.symbol === symbol);
+        function openChart(symbol, optDate) {
+            const item = scanData.find(s => s.symbol === symbol && (!optDate || s.virgin_date === optDate));
             if (!item) return;
 
             document.getElementById('modal-symbol').innerText = `${item.clean_symbol} (${item.symbol})`;
-            const compBadge = document.getElementById('modal-compression');
-            compBadge.innerText = `🔥 Inside Value: -${item.compression_pct}% Compressed`;
+            const badge = document.getElementById('modal-badge');
+            
+            if (item.strategy === 'virgin_cpr') {
+                badge.innerText = `🛡️ Untested Virgin CPR (${item.virgin_date} • ${item.days_ago}d ago)`;
+                badge.className = `px-2.5 py-1 rounded-md text-xs font-semibold border ${item.role_badge}`;
+                document.getElementById('modal-info').innerText = `${item.role} (${item.dist_pct}%)`;
+            } else {
+                badge.innerText = `🔥 Inside Value: -${item.compression_pct}% Compressed`;
+                badge.className = `px-2.5 py-1 rounded-md text-xs font-semibold border ${item.quality_tag.badge}`;
+                document.getElementById('modal-info').innerText = `Triggers: ${item.pm_high} / ${item.pm_low}`;
+            }
 
             document.getElementById('modal-tc').innerText = item.curr_cpr.cpr_top;
             document.getElementById('modal-p').innerText = item.curr_cpr.p;
             document.getElementById('modal-bc').innerText = item.curr_cpr.cpr_bot;
-            document.getElementById('modal-pmhl').innerText = `${item.pm_high} / ${item.pm_low}`;
 
             const modal = document.getElementById('chart-modal');
             modal.classList.remove('hidden');
@@ -793,13 +992,14 @@ DASHBOARD_HTML = """
             }));
             candleSeries.setData(candleData);
 
+            // CPR Price Lines
             candleSeries.createPriceLine({
                 price: item.curr_cpr.cpr_top,
                 color: '#38bdf8',
                 lineWidth: 2,
                 lineStyle: LightweightCharts.LineStyle.Solid,
                 axisLabelVisible: true,
-                title: 'TC'
+                title: item.strategy === 'virgin_cpr' ? 'Virgin TC' : 'TC'
             });
             candleSeries.createPriceLine({
                 price: item.curr_cpr.p,
@@ -807,7 +1007,7 @@ DASHBOARD_HTML = """
                 lineWidth: 2,
                 lineStyle: LightweightCharts.LineStyle.Dashed,
                 axisLabelVisible: true,
-                title: 'PIVOT'
+                title: item.strategy === 'virgin_cpr' ? 'Virgin Pivot' : 'PIVOT'
             });
             candleSeries.createPriceLine({
                 price: item.curr_cpr.cpr_bot,
@@ -815,24 +1015,7 @@ DASHBOARD_HTML = """
                 lineWidth: 2,
                 lineStyle: LightweightCharts.LineStyle.Solid,
                 axisLabelVisible: true,
-                title: 'BC'
-            });
-
-            candleSeries.createPriceLine({
-                price: item.pm_high,
-                color: '#22c55e',
-                lineWidth: 2,
-                lineStyle: LightweightCharts.LineStyle.LargeDashed,
-                axisLabelVisible: true,
-                title: item.trigger_name_h
-            });
-            candleSeries.createPriceLine({
-                price: item.pm_low,
-                color: '#ef4444',
-                lineWidth: 2,
-                lineStyle: LightweightCharts.LineStyle.LargeDashed,
-                axisLabelVisible: true,
-                title: item.trigger_name_l
+                title: item.strategy === 'virgin_cpr' ? 'Virgin BC' : 'BC'
             });
 
             chartInstance.timeScale().fitContent();
@@ -861,6 +1044,7 @@ def index():
 
 @app.route("/api/scan")
 def api_scan():
+    strategy = request.args.get("strategy", "virgin_cpr")
     market = request.args.get("market", "india_all")
     timeframe = request.args.get("timeframe", "daily")
     mode = request.args.get("mode", "developing")
@@ -869,19 +1053,26 @@ def api_scan():
     
     results = []
     with ThreadPoolExecutor(max_workers=10) as executor:
-        futures = [executor.submit(process_cpr_setup, sym, timeframe, mode) for sym in symbols]
-        for f in futures:
-            res = f.result()
-            if res:
-                results.append(res)
-                
-    results.sort(key=lambda x: x['compression_pct'], reverse=True)
+        if strategy == "virgin_cpr":
+            futures = [executor.submit(process_virgin_cpr_daily, sym, 10) for sym in symbols]
+            for f in futures:
+                res_list = f.result()
+                if res_list:
+                    results.extend(res_list)
+            results.sort(key=lambda x: x['abs_dist'])
+        else:
+            futures = [executor.submit(process_cpr_setup, sym, timeframe, mode) for sym in symbols]
+            for f in futures:
+                res = f.result()
+                if res:
+                    results.append(res)
+            results.sort(key=lambda x: x['compression_pct'], reverse=True)
     
     return jsonify({
+        "strategy": strategy,
         "market": market,
         "timeframe": timeframe,
         "mode": mode,
-        "setup": "INSIDE_VALUE_ONLY",
         "count": len(results),
         "results": results
     })
@@ -890,7 +1081,7 @@ if __name__ == "__main__":
     import os
     port = int(os.environ.get("PORT", 5001))
     print("\n=======================================================")
-    print("🚀 PIVOT BOSS - MULTI-TIMEFRAME INSIDE VALUE CPR TERMINAL")
+    print("🚀 PIVOT BOSS - MULTI-STRATEGY CPR TERMINAL (VIRGIN & INSIDE VALUE)")
     print(f"👉 Open Dashboard: http://127.0.0.1:{port}")
     print("=======================================================\n")
     app.run(host="0.0.0.0", port=port, debug=False)
