@@ -112,6 +112,79 @@ class YahooSessionManager:
                 pass
             return self.crumb
 
+    def fetch_crypto_direct(self, symbol):
+        """
+        Direct native crypto exchange pipeline:
+        Tries Binance API -> Gate.io API -> falls back to Yahoo Finance.
+        Returns (sorted_months, daily_candles).
+        """
+        base = symbol.replace('-USD', '').replace('USDT', '').replace('USD', '')
+        binance_pair = f"{base}USDT"
+        gate_pair = f"{base}_USDT"
+
+        daily_candles = []
+
+        # 1. Try Binance
+        try:
+            url = f"https://api.binance.com/api/v3/klines?symbol={binance_pair}&interval=1d&limit=365"
+            r = self.session.get(url, timeout=3)
+            if r.status_code == 200:
+                for k in r.json():
+                    ts = int(k[0]) // 1000
+                    o, h, l, c = float(k[1]), float(k[2]), float(k[3]), float(k[4])
+                    if o > 0 and h > 0 and l > 0 and c > 0:
+                        daily_candles.append({
+                            "time": ts,
+                            "date": datetime.datetime.fromtimestamp(ts).strftime('%Y-%m-%d'),
+                            "open": o, "high": h, "low": l, "close": c,
+                            "volume": int(float(k[5]))
+                        })
+        except Exception:
+            pass
+
+        # 2. Try Gate.io (unrestricted global exchange)
+        if not daily_candles:
+            try:
+                url = f"https://api.gateio.ws/api/v4/spot/candlesticks?currency_pair={gate_pair}&interval=1d&limit=365"
+                r = self.session.get(url, timeout=3)
+                if r.status_code == 200:
+                    for k in r.json():
+                        ts = int(k[0])
+                        o, h, l, c = float(k[5]), float(k[3]), float(k[4]), float(k[2])
+                        if o > 0 and h > 0 and l > 0 and c > 0:
+                            daily_candles.append({
+                                "time": ts,
+                                "date": datetime.datetime.fromtimestamp(ts).strftime('%Y-%m-%d'),
+                                "open": o, "high": h, "low": l, "close": c,
+                                "volume": int(float(k[1]))
+                            })
+            except Exception:
+                pass
+
+        if daily_candles:
+            monthly_dict = {}
+            for candle in daily_candles:
+                m_key = candle['date'][:7]
+                if m_key not in monthly_dict:
+                    monthly_dict[m_key] = {
+                        'month': m_key,
+                        'time': candle['time'],
+                        'open': candle['open'],
+                        'high': candle['high'],
+                        'low': candle['low'],
+                        'close': candle['close'],
+                        'volume': candle['volume']
+                    }
+                else:
+                    monthly_dict[m_key]['high'] = max(monthly_dict[m_key]['high'], candle['high'])
+                    monthly_dict[m_key]['low'] = min(monthly_dict[m_key]['low'], candle['low'])
+                    monthly_dict[m_key]['close'] = candle['close']
+                    monthly_dict[m_key]['volume'] += candle['volume']
+            sorted_months = [monthly_dict[k] for k in sorted(monthly_dict.keys())]
+            return (sorted_months, daily_candles)
+
+        return ([], [])
+
     def fetch_market_bars(self, symbol):
         cache_key = f"{symbol}_DAILY_HISTORY"
         now = time.time()
@@ -119,6 +192,13 @@ class YahooSessionManager:
             ts, bars = self.data_cache[cache_key]
             if now - ts < 600:
                 return bars
+
+        # Direct Crypto Exchange Pipeline (Binance / Gate.io)
+        if "-USD" in symbol or "USDT" in symbol:
+            months, candles = self.fetch_crypto_direct(symbol)
+            if months and candles:
+                self.data_cache[cache_key] = (now, (months, candles))
+                return (months, candles)
 
         crumb = self.ensure_crumb()
         encoded_sym = urllib.parse.quote(symbol)
