@@ -368,7 +368,7 @@ class YahooSessionManager:
 
         # 1. Try Binance
         try:
-            url = f"https://api.binance.com/api/v3/klines?symbol={binance_pair}&interval=1d&limit=365"
+            url = f"https://api.binance.com/api/v3/klines?symbol={binance_pair}&interval=1d&limit=730"
             r = self.session.get(url, timeout=3)
             if r.status_code == 200:
                 for k in r.json():
@@ -387,7 +387,7 @@ class YahooSessionManager:
         # 2. Try Gate.io (unrestricted global exchange)
         if not daily_candles:
             try:
-                url = f"https://api.gateio.ws/api/v4/spot/candlesticks?currency_pair={gate_pair}&interval=1d&limit=365"
+                url = f"https://api.gateio.ws/api/v4/spot/candlesticks?currency_pair={gate_pair}&interval=1d&limit=730"
                 r = self.session.get(url, timeout=3)
                 if r.status_code == 200:
                     for k in r.json():
@@ -444,7 +444,7 @@ class YahooSessionManager:
 
         crumb = self.ensure_crumb()
         encoded_sym = urllib.parse.quote(symbol)
-        url = f"https://query2.finance.yahoo.com/v8/finance/chart/{encoded_sym}?range=1y&interval=1d"
+        url = f"https://query2.finance.yahoo.com/v8/finance/chart/{encoded_sym}?range=2y&interval=1d"
         if crumb:
             url += f"&crumb={crumb}"
 
@@ -541,7 +541,64 @@ def process_cpr_setup(symbol, timeframe="monthly", mode="active"):
     """Inside Value CPR calculation"""
     monthly_bars, daily_candles = YAHOO_MGR.fetch_market_bars(symbol)
     
-    if timeframe == "monthly":
+    if timeframe == "quarterly":
+        if not daily_candles: return None
+        quarterly_dict = {}
+        for candle in daily_candles:
+            date_str = candle['date']
+            yr = date_str[:4]
+            mo = int(date_str[5:7])
+            q_num = (mo - 1) // 3 + 1
+            q_key = f"{yr}-Q{q_num}"
+            if q_key not in quarterly_dict:
+                quarterly_dict[q_key] = {
+                    'quarter': q_key,
+                    'time': candle['time'],
+                    'open': candle['open'],
+                    'high': candle['high'],
+                    'low': candle['low'],
+                    'close': candle['close'],
+                    'volume': candle['volume']
+                }
+            else:
+                quarterly_dict[q_key]['high'] = max(quarterly_dict[q_key]['high'], candle['high'])
+                quarterly_dict[q_key]['low'] = min(quarterly_dict[q_key]['low'], candle['low'])
+                quarterly_dict[q_key]['close'] = candle['close']
+                quarterly_dict[q_key]['volume'] += candle['volume']
+        sorted_quarters = [quarterly_dict[k] for k in sorted(quarterly_dict.keys())]
+        if len(sorted_quarters) < 3: return None
+        current_q = sorted_quarters[-1]
+        last_q = sorted_quarters[-2]
+        prev_q = sorted_quarters[-3]
+
+        last_price = current_q['close']
+        if last_price < 0.001: return None
+
+        is_crypto = "-USD" in symbol
+        dec = 4 if is_crypto and last_price < 1.0 else (3 if is_crypto and last_price < 10.0 else 2)
+
+        if mode == "developing":
+            cpr_target = calculate_cpr_and_pivots(current_q['high'], current_q['low'], current_q['close'], dec)
+            cpr_base = calculate_cpr_and_pivots(last_q['high'], last_q['low'], last_q['close'], dec)
+            target_label = f"Developing Next Qtr ({current_q['quarter']} QTD)"
+            base_label = f"Current Qtr ({last_q['quarter']})"
+            trigger_h = round(current_q['high'], dec)
+            trigger_l = round(current_q['low'], dec)
+            trigger_name_h = "QTD High (Buy)"
+            trigger_name_l = "QTD Low (Sell)"
+        else:
+            cpr_target = calculate_cpr_and_pivots(last_q['high'], last_q['low'], last_q['close'], dec)
+            cpr_base = calculate_cpr_and_pivots(prev_q['high'], prev_q['low'], prev_q['close'], dec)
+            target_label = f"Current Qtr ({last_q['quarter']})"
+            base_label = f"Previous Qtr ({prev_q['quarter']})"
+            trigger_h = round(last_q['high'], dec)
+            trigger_l = round(last_q['low'], dec)
+            trigger_name_h = "PQ High (Buy)"
+            trigger_name_l = "PQ Low (Sell)"
+
+        base_prev_close = last_q['close']
+
+    elif timeframe == "monthly":
         if len(monthly_bars) < 3: return None
         current_m = monthly_bars[-1]
         last_m = monthly_bars[-2]
@@ -836,6 +893,9 @@ DASHBOARD_HTML = """
                         <button onclick="setTimeframe('monthly')" id="btn-tf-monthly" class="px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white">
                             🗓️ Monthly
                         </button>
+                        <button onclick="setTimeframe('quarterly')" id="btn-tf-quarterly" class="px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white">
+                            📊 Quarterly
+                        </button>
                     </div>
 
                     <!-- Mode Selector -->
@@ -1098,11 +1158,11 @@ DASHBOARD_HTML = """
                     </div>
                     <div class="p-4 rounded-xl bg-navy-950/70 border border-navy-700">
                         <div class="text-amber-400 font-bold text-sm mb-1.5 flex items-center gap-1.5">
-                            <span>🎯 Inside Value (Coil)</span>
+                            <span>🎯 Inside Value (Daily, Monthly & Quarterly)</span>
                         </div>
                         <p class="text-slate-400 leading-normal">The new CPR is <strong class="text-white">completely engulfed</strong> inside the prior period CPR. Extreme volatility compression coiling energy before an explosive directional breakout.</p>
-                        <div class="mt-2 text-[11px] text-purple-300 font-medium">• Compression &gt; 70% = Mega Coil Explosion Imminent</div>
-                        <div class="text-[11px] text-slate-300 font-medium">• Triggers: Buy &gt; PDH / Sell &lt; PDL</div>
+                        <div class="mt-2 text-[11px] text-purple-300 font-medium">• Daily & Monthly: High-velocity intraweek trend expansions</div>
+                        <div class="text-[11px] text-amber-300 font-medium">• Quarterly: Macro multi-month institutional mega trends</div>
                     </div>
                     <div class="p-4 rounded-xl bg-navy-950/70 border border-navy-700">
                         <div class="text-cyan-400 font-bold text-sm mb-1.5 flex items-center gap-1.5">
@@ -1567,14 +1627,20 @@ DASHBOARD_HTML = """
                     // Timeframe buttons
                     const btnDaily = document.getElementById('btn-tf-daily');
                     const btnMonthly = document.getElementById('btn-tf-monthly');
+                    const btnQuarterly = document.getElementById('btn-tf-quarterly');
+                    [btnDaily, btnMonthly, btnQuarterly].forEach(b => {
+                        if (b) b.className = 'px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white';
+                    });
+
                     if (currentTimeframe === 'daily') {
-                        btnDaily.className = 'px-3 py-1.5 rounded-lg transition-all text-black bg-amber-400 font-bold shadow';
-                        btnMonthly.className = 'px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white';
+                        if (btnDaily) btnDaily.className = 'px-3 py-1.5 rounded-lg transition-all text-black bg-amber-400 font-bold shadow';
                         logo.innerText = 'D';
-                    } else {
-                        btnMonthly.className = 'px-3 py-1.5 rounded-lg transition-all text-black bg-amber-400 font-bold shadow';
-                        btnDaily.className = 'px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white';
+                    } else if (currentTimeframe === 'monthly') {
+                        if (btnMonthly) btnMonthly.className = 'px-3 py-1.5 rounded-lg transition-all text-black bg-amber-400 font-bold shadow';
                         logo.innerText = 'M';
+                    } else if (currentTimeframe === 'quarterly') {
+                        if (btnQuarterly) btnQuarterly.className = 'px-3 py-1.5 rounded-lg transition-all text-black bg-amber-400 font-bold shadow';
+                        logo.innerText = 'Q';
                     }
 
                     // Mode buttons
@@ -1588,7 +1654,7 @@ DASHBOARD_HTML = """
                         btnDev.className = 'px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white';
                     }
 
-                    const tfName = currentTimeframe === 'daily' ? 'DAILY' : 'MONTHLY';
+                    const tfName = currentTimeframe === 'daily' ? 'DAILY' : (currentTimeframe === 'monthly' ? 'MONTHLY' : 'QUARTERLY');
                     const modeName = currentMode === 'developing' ? 'DEVELOPING (NEXT)' : 'ACTIVE (CURRENT)';
                     badge.innerText = `${tfName} • ${modeName}`;
                     badge.className = 'px-2 py-0.5 rounded text-[10px] bg-amber-500/20 text-amber-300 font-mono font-medium border border-amber-500/30';
@@ -1597,7 +1663,11 @@ DASHBOARD_HTML = """
                     bannerIcon.innerText = '🎯';
                     bannerTitle.className = 'text-sm font-bold text-amber-300';
                     bannerTitle.innerText = `${tfName} ${modeName} Inside Value CPR Setup:`;
-                    bannerDesc.innerHTML = 'These assets are in <strong>verified volatility compression</strong>. Trade breakouts above PMH/Today High or breakdowns below PML/Today Low.';
+                    if (currentTimeframe === 'quarterly') {
+                        bannerDesc.innerHTML = 'Quarterly Inside Value CPRs represent <strong>multi-month macro volatility compression</strong>. Breakouts above PQH/QTD High or breakdowns below PQL/QTD Low trigger massive institutional trend expansions.';
+                    } else {
+                        bannerDesc.innerHTML = 'These assets are in <strong>verified volatility compression</strong>. Trade breakouts above PMH/Today High or breakdowns below PML/Today Low.';
+                    }
                     tableTitle.innerText = `🔥 Verified ${tfName} ${modeName} Inside Value Setups`;
                     tableTitle.className = 'text-xs font-bold uppercase tracking-wider text-amber-400 flex items-center gap-2';
                 }
@@ -1608,7 +1678,7 @@ DASHBOARD_HTML = """
                         tableTitle.innerText = '🛡️ Verified Daily Virgin CPRs + Derivatives Squeeze Risk (200+ Liquid Coins)';
                         bannerDesc.innerHTML = 'Price has <strong>never touched these CPR pivot ranges</strong> since formation! Track <strong>Open Interest, 24h Squeeze Ratio, and Funding Rates</strong> to catch high-conviction breakout bounces.';
                     } else {
-                        const tfName = currentTimeframe === 'daily' ? 'DAILY' : 'MONTHLY';
+                        const tfName = currentTimeframe === 'daily' ? 'DAILY' : (currentTimeframe === 'monthly' ? 'MONTHLY' : 'QUARTERLY');
                         const modeName = currentMode === 'developing' ? 'DEVELOPING' : 'ACTIVE';
                         tableTitle.innerText = `🔥 Verified ${tfName} ${modeName} Inside Value + Derivatives Squeeze Risk (200+ Liquid Coins)`;
                         bannerDesc.innerHTML = 'Scan volatility compression coils alongside <strong>Live Open Interest, Leverage Ratios, and Funding Rates</strong> before big liquidation squeezes.';
