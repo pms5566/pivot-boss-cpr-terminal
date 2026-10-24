@@ -110,41 +110,96 @@ class YahooSessionManager:
                     return self.crumb
             except Exception:
                 pass
-    def get_dynamic_crypto_symbols(self, max_coins=250):
+    def get_crypto_market_caps(self):
+        """
+        Fetches circulating market caps for all currencies from Gate.io spot currencies API.
+        Returns dict: { 'BTC': 1620105480119.0, ... }
+        Cached for 3600 seconds.
+        """
+        cache_key = "CRYPTO_MARKET_CAPS"
         now = time.time()
-        if "DYNAMIC_CRYPTO_SYMBOLS" in self.data_cache:
-            ts, syms = self.data_cache["DYNAMIC_CRYPTO_SYMBOLS"]
+        if cache_key in self.data_cache:
+            ts, mc_map = self.data_cache[cache_key]
             if now - ts < 3600:
+                return mc_map
+        mc_map = {}
+        try:
+            url = 'https://api.gateio.ws/api/v4/spot/currencies'
+            r = self.session.get(url, timeout=8)
+            if r.status_code == 200:
+                data = r.json()
+                for c in data:
+                    curr = c.get('currency', '').upper()
+                    mc_str = c.get('market_cap', '')
+                    if curr and mc_str and not c.get('delisted', False) and not c.get('trade_disabled', False):
+                        try:
+                            mc = float(mc_str)
+                            if mc > 0:
+                                mc_map[curr] = mc
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+        self.data_cache[cache_key] = (now, mc_map)
+        return mc_map
+
+    def format_market_cap(self, mc):
+        if not mc or mc <= 0:
+            return None
+        if mc >= 1_000_000_000:
+            return f"${mc / 1_000_000_000:.2f}B"
+        elif mc >= 1_000_000:
+            return f"${mc / 1_000_000:.1f}M"
+        elif mc >= 1_000:
+            return f"${mc / 1_000:.0f}K"
+        return f"${mc:.0f}"
+
+    def get_dynamic_crypto_symbols(self, min_mc=5_000_000, max_coins=350):
+        now = time.time()
+        cache_key = f"DYNAMIC_CRYPTO_SYMBOLS_{min_mc}_{max_coins}"
+        if cache_key in self.data_cache:
+            ts, syms = self.data_cache[cache_key]
+            if now - ts < 1800:
                 return syms
 
         base_list = WATCHLISTS["crypto_all"]["symbols"]
         symbols_set = set(base_list)
 
+        mc_map = self.get_crypto_market_caps()
+
         try:
             url = 'https://api.gateio.ws/api/v4/spot/tickers'
-            r = self.session.get(url, timeout=5)
+            r = self.session.get(url, timeout=6)
             if r.status_code == 200:
                 data = r.json()
-                stables_and_junk = {'USDT', 'USDC', 'USD', 'BUSD', 'TUSD', 'FDUSD', 'DAI', 'EUR', 'USDE', 'PYUSD', 'PAXG', 'XAUT', 'USDY'}
+                stables_and_junk = {'USDT', 'USDC', 'USD', 'BUSD', 'TUSD', 'FDUSD', 'DAI', 'EUR', 'USDE', 'PYUSD', 'PAXG', 'XAUT', 'USDY', 'STETH', 'WBTC', 'WETH', 'RLUSD', 'USDD', 'FRAX', 'LUSD', 'GUSD', 'USDP'}
                 candidates = []
                 for t in data:
                     pair = t.get('currency_pair', '')
                     if pair.endswith('_USDT'):
-                        base = pair.replace('_USDT', '')
+                        base = pair.replace('_USDT', '').upper()
                         if base in stables_and_junk: continue
                         if base.endswith('3L') or base.endswith('3S') or base.endswith('5L') or base.endswith('5S'): continue
                         if (base.endswith('G') or base.endswith('ON') or base.endswith('X')) and len(base) >= 3 and any(s in base for s in ['WMT', 'HD', 'LLY', 'QQQ', 'SPY', 'TSLA', 'AAPL', 'MSFT', 'NVDA', 'AMZN', 'GOOG', 'META', 'GLD', 'SLV', 'COIN', 'MSTR', 'PLTR', 'COST', 'HOOD', 'SNDK', 'BRK', 'AVGO']):
                             continue
                         if not base.isascii() or not base.isalnum(): continue
+                        
+                        coin_mc = mc_map.get(base, 0)
+                        # Filter for coins whose Market Cap is >= min_mc (e.g., $5M+)
+                        if coin_mc < min_mc:
+                            continue
+
                         try:
-                            vol = float(t.get('quote_volume', 0))
-                            price = float(t.get('last', 0))
-                            if vol >= 200000 and price > 0:
-                                candidates.append((f"{base}-USD", vol))
+                            vol = float(t.get('quote_volume', 0) or 0)
+                            price = float(t.get('last', 0) or 0)
+                            if vol >= 15000 and price > 0:
+                                candidates.append((f"{base}-USD", coin_mc, vol))
                         except Exception:
                             pass
+
+                # Sort by Market Cap descending (highest institutional quality coins first)
                 candidates.sort(key=lambda x: x[1], reverse=True)
-                for sym, _ in candidates[:max_coins]:
+                for sym, _, _ in candidates[:max_coins]:
                     symbols_set.add(sym)
         except Exception:
             pass
@@ -153,7 +208,7 @@ class YahooSessionManager:
         priority = ["BTC-USD", "ETH-USD", "SOL-USD", "BNB-USD", "XRP-USD", "DOGE-USD", "ADA-USD", "AVAX-USD", "SUI-USD", "NEAR-USD", "PEPE-USD", "LINK-USD", "LTC-USD"]
         sorted_final = [p for p in priority if p in final_list] + [s for s in final_list if s not in priority]
         
-        self.data_cache["DYNAMIC_CRYPTO_SYMBOLS"] = (now, sorted_final)
+        self.data_cache[cache_key] = (now, sorted_final)
         return sorted_final
 
     def get_crypto_derivatives_data(self):
@@ -169,6 +224,7 @@ class YahooSessionManager:
                 return data
 
         deriv_map = {}
+        mc_map = self.get_crypto_market_caps()
         try:
             url = "https://api.gateio.ws/api/v4/futures/usdt/tickers"
             r = self.session.get(url, timeout=5)
@@ -266,9 +322,14 @@ class YahooSessionManager:
                             oi_signal_desc = "Normal institutional rotation without extreme imbalance"
                             oi_signal_class = "text-slate-300 bg-slate-500/10 border-slate-500/30"
 
+                        coin_mc = mc_map.get(base)
+                        mc_fmt = self.format_market_cap(coin_mc)
+
                         deriv_map[base] = {
                             "symbol": f"{base}-USD",
                             "clean_symbol": base,
+                            "market_cap": coin_mc,
+                            "mc_formatted": mc_fmt,
                             "last_price": last_p,
                             "change_pct": chg_pct,
                             "high_24h": high_24h,
@@ -697,9 +758,29 @@ def process_cpr_setup(symbol, timeframe="monthly", mode="active"):
     clean_symbol = symbol.replace(".NS", "").replace("^", "")
     oi_info = YAHOO_MGR.get_crypto_derivatives(symbol) if is_crypto else None
 
+    market_cap = None
+    mc_formatted = None
+    if is_crypto:
+        base_sym = clean_symbol.replace("-USD", "").replace("USDT", "").replace("USD", "").upper()
+        mc_map = YAHOO_MGR.get_crypto_market_caps()
+        if base_sym in mc_map:
+            market_cap = mc_map[base_sym]
+            mc_formatted = YAHOO_MGR.format_market_cap(market_cap)
+
+    market_cap = None
+    mc_formatted = None
+    if is_crypto:
+        base_sym = clean_symbol.replace("-USD", "").replace("USDT", "").replace("USD", "").upper()
+        mc_map = YAHOO_MGR.get_crypto_market_caps()
+        if base_sym in mc_map:
+            market_cap = mc_map[base_sym]
+            mc_formatted = YAHOO_MGR.format_market_cap(market_cap)
+
     return {
         "symbol": symbol,
         "clean_symbol": clean_symbol,
+        "market_cap": market_cap,
+        "mc_formatted": mc_formatted,
         "strategy": "inside_value",
         "timeframe": timeframe,
         "mode": mode,
@@ -740,6 +821,15 @@ def process_virgin_cpr_daily(symbol, max_days=10):
     dec = 4 if is_crypto and ltp < 1.0 else (3 if is_crypto and ltp < 10.0 else 2)
     clean_symbol = symbol.replace(".NS", "").replace("^", "")
     oi_info = YAHOO_MGR.get_crypto_derivatives(symbol) if is_crypto else None
+
+    market_cap = None
+    mc_formatted = None
+    if is_crypto:
+        base_sym = clean_symbol.replace("-USD", "").replace("USDT", "").replace("USD", "").upper()
+        mc_map = YAHOO_MGR.get_crypto_market_caps()
+        if base_sym in mc_map:
+            market_cap = mc_map[base_sym]
+            mc_formatted = YAHOO_MGR.format_market_cap(market_cap)
 
     prev_c_for_change = daily_candles[-2]
     chg = round(ltp - prev_c_for_change['close'], dec)
@@ -792,6 +882,8 @@ def process_virgin_cpr_daily(symbol, max_days=10):
             virgin_setups.append({
                 "symbol": symbol,
                 "clean_symbol": clean_symbol,
+                "market_cap": market_cap,
+                "mc_formatted": mc_formatted,
                 "strategy": "virgin_cpr",
                 "virgin_date": session_c['date'],
                 "days_ago": days_ago,
@@ -919,6 +1011,19 @@ DASHBOARD_HTML = """
                     </button>
                     <button onclick="setMarket('crypto_all')" id="btn-crypto" class="px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white">
                         🪙 Crypto
+                    </button>
+                </div>
+
+                <!-- Crypto Market Cap Filter (Visible when Crypto is active) -->
+                <div id="crypto-mc-controls" class="hidden flex items-center bg-navy-950 p-1 rounded-xl border border-indigo-500/30 text-xs font-medium shadow-inner">
+                    <button onclick="setMinMC(5000000)" id="btn-mc-5m" class="px-2.5 py-1.5 rounded-lg transition-all text-white bg-indigo-600 font-bold shadow" title="Coins with Market Cap >= $5M">
+                        🪙 ≥ $5M MC
+                    </button>
+                    <button onclick="setMinMC(50000000)" id="btn-mc-50m" class="px-2.5 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white" title="Mid-Cap Coins >= $50M">
+                        💎 ≥ $50M
+                    </button>
+                    <button onclick="setMinMC(500000000)" id="btn-mc-500m" class="px-2.5 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white" title="Large-Cap Giants >= $500M">
+                        👑 ≥ $500M
                     </button>
                 </div>
 
@@ -1263,10 +1368,17 @@ DASHBOARD_HTML = """
         let currentTimeframe = 'daily';
         let currentMode = 'developing';
         let currentMarket = 'india_all';
+        let currentMinMC = 5000000; // $5M min Market Cap default for crypto
         let currentSort = { column: 'abs_dist', ascending: true };
         let scanData = [];
         let chartInstance = null;
         let currentQuickFilter = 'all'; // 'all', 'squeeze', 'magnet', 'megacoil'
+
+        function setMinMC(mc) {
+            currentMinMC = mc;
+            updateUIState();
+            runScan();
+        }
 
         function openPlaybookModal() {
             document.getElementById('playbook-modal').classList.remove('hidden');
@@ -1674,14 +1786,15 @@ DASHBOARD_HTML = """
 
                 // Crypto market banner adjustments
                 if (currentMarket === 'crypto_all') {
+                    const mcLabel = currentMinMC >= 1000000000 ? `$${(currentMinMC/1e9).toFixed(0)}B` : (currentMinMC >= 1000000 ? `$${(currentMinMC/1e6).toFixed(0)}M` : `$${currentMinMC}`);
                     if (currentStrategy === 'virgin_cpr') {
-                        tableTitle.innerText = '🛡️ Verified Daily Virgin CPRs + Derivatives Squeeze Risk (200+ Liquid Coins)';
-                        bannerDesc.innerHTML = 'Price has <strong>never touched these CPR pivot ranges</strong> since formation! Track <strong>Open Interest, 24h Squeeze Ratio, and Funding Rates</strong> to catch high-conviction breakout bounces.';
+                        tableTitle.innerText = `🛡️ Verified Daily Virgin CPRs (Coins with MC ≥ ${mcLabel})`;
+                        bannerDesc.innerHTML = `Price has <strong>never touched these CPR pivot ranges</strong> since formation! Tracking institutional coins with <strong>Market Cap ≥ ${mcLabel}</strong>.`;
                     } else {
                         const tfName = currentTimeframe === 'daily' ? 'DAILY' : (currentTimeframe === 'monthly' ? 'MONTHLY' : 'QUARTERLY');
                         const modeName = currentMode === 'developing' ? 'DEVELOPING' : 'ACTIVE';
-                        tableTitle.innerText = `🔥 Verified ${tfName} ${modeName} Inside Value + Derivatives Squeeze Risk (200+ Liquid Coins)`;
-                        bannerDesc.innerHTML = 'Scan volatility compression coils alongside <strong>Live Open Interest, Leverage Ratios, and Funding Rates</strong> before big liquidation squeezes.';
+                        tableTitle.innerText = `🔥 Verified ${tfName} ${modeName} Inside Value (Coins with MC ≥ ${mcLabel})`;
+                        bannerDesc.innerHTML = `Scanning volatility compression coils across coins with <strong>Market Cap ≥ ${mcLabel}</strong> alongside <strong>Live Open Interest and Squeeze Ratios</strong>.`;
                     }
                 }
             }
@@ -1699,6 +1812,21 @@ DASHBOARD_HTML = """
                     }
                 }
             });
+
+            // Crypto Market Cap Filter Controls
+            const mcControls = document.getElementById('crypto-mc-controls');
+            if (currentMarket === 'crypto_all' && currentStrategy !== 'oi_radar') {
+                if (mcControls) mcControls.classList.remove('hidden');
+                ['5m', '50m', '500m'].forEach(k => {
+                    const btn = document.getElementById(`btn-mc-${k}`);
+                    if (btn) btn.className = 'px-2.5 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white';
+                });
+                const activeKey = currentMinMC >= 500000000 ? '500m' : (currentMinMC >= 50000000 ? '50m' : '5m');
+                const activeBtn = document.getElementById(`btn-mc-${activeKey}`);
+                if (activeBtn) activeBtn.className = 'px-2.5 py-1.5 rounded-lg transition-all text-white bg-indigo-600 font-bold shadow';
+            } else {
+                if (mcControls) mcControls.classList.add('hidden');
+            }
         }
 
         function setStrategy(strat) {
@@ -1747,7 +1875,7 @@ DASHBOARD_HTML = """
                 if (isCrypto) {
                     thead.innerHTML = `
                         <tr class="bg-navy-950/90 border-b border-navy-700 text-slate-400 font-semibold tracking-wider uppercase text-[11px]">
-                            <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('clean_symbol')">Coin Pair ↕</th>
+                            <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('market_cap')">Coin Pair & MC ↕</th>
                             <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('ltp')">Current LTP & Chg ↕</th>
                             <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('days_ago')">Virgin Date & Age ↕</th>
                             <th class="py-3.5 px-4">Untested CPR Band (BC • P • TC)</th>
@@ -1776,7 +1904,7 @@ DASHBOARD_HTML = """
                 if (isCrypto) {
                     thead.innerHTML = `
                         <tr class="bg-navy-950/90 border-b border-navy-700 text-slate-400 font-semibold tracking-wider uppercase text-[11px]">
-                            <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('clean_symbol')">Coin Pair ↕</th>
+                            <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('market_cap')">Coin Pair & MC ↕</th>
                             <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('ltp')">Current LTP & Chg ↕</th>
                             <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('compression_pct')">Compression % ↕</th>
                             <th class="py-3.5 px-4">Target CPR Band (BC • P • TC)</th>
@@ -1813,7 +1941,7 @@ DASHBOARD_HTML = """
             `;
 
             try {
-                const response = await fetch(`/api/scan?strategy=${currentStrategy}&market=${currentMarket}&timeframe=${currentTimeframe}&mode=${currentMode}`);
+                const response = await fetch(`/api/scan?strategy=${currentStrategy}&market=${currentMarket}&timeframe=${currentTimeframe}&mode=${currentMode}&min_mc=${currentMinMC}`);
                 const data = await response.json();
                 scanData = data.results || [];
                 document.getElementById('coils-total').innerText = scanData.length;
@@ -1869,6 +1997,8 @@ DASHBOARD_HTML = """
                     valA = a.abs_dist || 0; valB = b.abs_dist || 0;
                 } else if (currentSort.column === 'compression_pct') {
                     valA = a.compression_pct || 0; valB = b.compression_pct || 0;
+                } else if (currentSort.column === 'market_cap') {
+                    valA = a.market_cap || 0; valB = b.market_cap || 0;
                 } else if (currentSort.column === 'role') {
                     valA = a.role || ''; valB = b.role || '';
                 } else if (currentSort.column === 'oi_usd') {
@@ -1918,7 +2048,10 @@ DASHBOARD_HTML = """
                         return `
                             <tr class="hover:bg-navy-800/80 transition group">
                                 <td class="py-3.5 px-4">
-                                    <div class="font-bold text-white text-sm tracking-tight">${item.clean_symbol}</div>
+                                    <div class="font-bold text-white text-sm tracking-tight flex items-center gap-1.5">
+                                        <span>${item.clean_symbol}</span>
+                                        ${item.mc_formatted ? `<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">${item.mc_formatted} MC</span>` : ''}
+                                    </div>
                                     <div class="text-[10px] text-slate-500 font-sans">${item.symbol}</div>
                                 </td>
                                 <td class="py-3.5 px-4">
@@ -2019,7 +2152,10 @@ DASHBOARD_HTML = """
                         return `
                             <tr class="hover:bg-navy-800/80 transition group">
                                 <td class="py-3.5 px-4">
-                                    <div class="font-bold text-white text-sm tracking-tight">${item.clean_symbol}</div>
+                                    <div class="font-bold text-white text-sm tracking-tight flex items-center gap-1.5">
+                                        <span>${item.clean_symbol}</span>
+                                        ${item.mc_formatted ? `<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">${item.mc_formatted} MC</span>` : ''}
+                                    </div>
                                     <div class="text-[10px] text-slate-500 font-sans">${item.symbol}</div>
                                 </td>
                                 <td class="py-3.5 px-4">
@@ -2238,14 +2374,15 @@ def api_scan():
     market = request.args.get("market", "india_all")
     timeframe = request.args.get("timeframe", "daily")
     mode = request.args.get("mode", "developing")
+    min_mc = float(request.args.get("min_mc", 5_000_000))
     if market == "crypto_all":
-        symbols = YAHOO_MGR.get_dynamic_crypto_symbols(250)
+        symbols = YAHOO_MGR.get_dynamic_crypto_symbols(min_mc=min_mc, max_coins=350)
     else:
         watchlist_info = WATCHLISTS.get(market, WATCHLISTS["india_all"])
         symbols = watchlist_info["symbols"]
     
     results = []
-    workers = 16 if market == "crypto_all" else 10
+    workers = 24 if market == "crypto_all" else 10
     with ThreadPoolExecutor(max_workers=workers) as executor:
         if strategy == "virgin_cpr":
             futures = [executor.submit(process_virgin_cpr_daily, sym, 10) for sym in symbols]
