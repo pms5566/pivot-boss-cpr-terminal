@@ -90,6 +90,9 @@ class YahooSessionManager:
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36'
         })
+        adapter = requests.adapters.HTTPAdapter(pool_connections=60, pool_maxsize=60, max_retries=1)
+        self.session.mount('https://', adapter)
+        self.session.mount('http://', adapter)
         self.crumb = None
         self.crumb_time = 0
         self.lock = threading.Lock()
@@ -154,7 +157,7 @@ class YahooSessionManager:
             return f"${mc / 1_000:.0f}K"
         return f"${mc:.0f}"
 
-    def get_dynamic_crypto_symbols(self, min_mc=5_000_000, max_coins=750):
+    def get_dynamic_crypto_symbols(self, min_mc=5_000_000, max_coins=1200):
         now = time.time()
         cache_key = f"DYNAMIC_CRYPTO_SYMBOLS_{min_mc}_{max_coins}"
         if cache_key in self.data_cache:
@@ -192,7 +195,7 @@ class YahooSessionManager:
                         try:
                             vol = float(t.get('quote_volume', 0) or 0)
                             price = float(t.get('last', 0) or 0)
-                            if vol >= 2500 and price > 0:
+                            if vol >= 1000 and price > 0:
                                 candidates.append((f"{base}-USD", coin_mc, vol))
                         except Exception:
                             pass
@@ -725,7 +728,7 @@ def process_cpr_setup(symbol, timeframe="monthly", mode="active"):
             
         base_prev_close = yesterday_c['close']
 
-    # Inside Value Condition: Strict Containment or Near-Coil (tolerance <= 0.3% of base pivot)
+    # 2-Day Pivot Range Relationships (Frank Ochoa's Master Framework)
     top_t, bot_t = cpr_target['cpr_top'], cpr_target['cpr_bot']
     top_b, bot_b = cpr_base['cpr_top'], cpr_base['cpr_bot']
     p_b = cpr_base['p']
@@ -734,8 +737,34 @@ def process_cpr_setup(symbol, timeframe="monthly", mode="active"):
     tol = p_b * 0.003
     is_near_coil = (top_t <= (top_b + tol)) and (bot_t >= (bot_b - tol))
 
-    if not is_strict and not is_near_coil:
-        return None
+    if is_strict:
+        relationship = "Inside Value"
+        rel_badge = "bg-purple-500/20 text-purple-300 border-purple-500/40"
+        rel_icon = "⚡"
+    elif is_near_coil:
+        relationship = "Near Coil (95%+)"
+        rel_badge = "bg-cyan-500/20 text-cyan-300 border-cyan-500/40"
+        rel_icon = "🌀"
+    elif bot_t > top_b:
+        relationship = "Higher Value"
+        rel_badge = "bg-emerald-500/20 text-emerald-300 border-emerald-500/40"
+        rel_icon = "🚀"
+    elif top_t < bot_b:
+        relationship = "Lower Value"
+        rel_badge = "bg-rose-500/20 text-rose-300 border-rose-500/40"
+        rel_icon = "🐻"
+    elif top_t >= top_b and bot_t <= bot_b:
+        relationship = "Outside Value"
+        rel_badge = "bg-orange-500/20 text-orange-300 border-orange-500/40"
+        rel_icon = "💥"
+    elif bot_t > bot_b:
+        relationship = "Overlap Higher"
+        rel_badge = "bg-teal-500/20 text-teal-300 border-teal-500/40"
+        rel_icon = "↗️"
+    else:
+        relationship = "Overlap Lower"
+        rel_badge = "bg-amber-500/20 text-amber-300 border-amber-500/40"
+        rel_icon = "↘️"
 
     width_target = cpr_target['cpr_width_pct']
     width_base = cpr_base['cpr_width_pct']
@@ -760,7 +789,7 @@ def process_cpr_setup(symbol, timeframe="monthly", mode="active"):
         else:
             quality_tag = {"text": "🟡 Strict Inside Value", "badge": "bg-yellow-500/20 text-yellow-300 border-yellow-500/40"}
     else:
-        quality_tag = {"text": "🌀 Near Coil (95%+)", "badge": "bg-cyan-500/20 text-cyan-300 border-cyan-500/40"}
+        quality_tag = {"text": f"{rel_icon} {relationship}", "badge": rel_badge}
 
     clean_symbol = symbol.replace(".NS", "").replace("^", "")
     oi_info = YAHOO_MGR.get_crypto_derivatives(symbol) if is_crypto else None
@@ -780,7 +809,12 @@ def process_cpr_setup(symbol, timeframe="monthly", mode="active"):
         "market_cap": market_cap,
         "mc_formatted": mc_formatted,
         "strategy": "inside_value",
+        "relationship": relationship,
+        "rel_badge": rel_badge,
+        "rel_icon": rel_icon,
+        "is_inside_value": (is_strict or is_near_coil),
         "is_strict": is_strict,
+        "cpr_width_pct": width_target,
         "timeframe": timeframe,
         "mode": mode,
         "target_label": target_label,
@@ -1015,6 +1049,9 @@ DASHBOARD_HTML = """
 
                 <!-- Crypto Market Cap Filter (Visible when Crypto is active) -->
                 <div id="crypto-mc-controls" class="hidden flex items-center bg-navy-950 p-1 rounded-xl border border-indigo-500/30 text-xs font-medium shadow-inner">
+                    <button onclick="setMinMC(0)" id="btn-mc-all" class="px-2.5 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white" title="All 1,200+ Coins in One Go">
+                        🌐 All (1,200+)
+                    </button>
                     <button onclick="setMinMC(5000000)" id="btn-mc-5m" class="px-2.5 py-1.5 rounded-lg transition-all text-white bg-indigo-600 font-bold shadow" title="Coins with Market Cap >= $5M">
                         🪙 ≥ $5M MC
                     </button>
@@ -1065,12 +1102,14 @@ DASHBOARD_HTML = """
                 </span>
                 <div class="flex items-center gap-2">
                     <!-- Quick Filter Pills -->
-                    <div id="quick-filters" class="flex items-center gap-1 bg-navy-950 p-1 rounded-xl border border-navy-700 text-[11px]">
-                        <button onclick="setQuickFilter('all')" id="qf-all" class="px-2.5 py-1 rounded-lg bg-navy-800 text-white font-semibold">All</button>
-                        <button onclick="setQuickFilter('strict')" id="qf-strict" class="px-2.5 py-1 rounded-lg text-slate-400 hover:text-white">⚡ Strict Only</button>
+                    <div id="quick-filters" class="flex flex-wrap items-center gap-1 bg-navy-950 p-1 rounded-xl border border-navy-700 text-[11px]">
+                        <button onclick="setQuickFilter('all')" id="qf-all" class="px-2.5 py-1 rounded-lg bg-amber-400 text-black font-bold shadow">All Coins</button>
+                        <button onclick="setQuickFilter('inside')" id="qf-inside" class="px-2.5 py-1 rounded-lg text-slate-400 hover:text-white">⚡ Inside Value</button>
+                        <button onclick="setQuickFilter('higher')" id="qf-higher" class="px-2.5 py-1 rounded-lg text-slate-400 hover:text-white">🚀 Higher Value</button>
+                        <button onclick="setQuickFilter('lower')" id="qf-lower" class="px-2.5 py-1 rounded-lg text-slate-400 hover:text-white">🐻 Lower Value</button>
+                        <button onclick="setQuickFilter('megacoil')" id="qf-megacoil" class="px-2.5 py-1 rounded-lg text-slate-400 hover:text-white">💥 MegaCoil (&gt;70%)</button>
                         <button onclick="setQuickFilter('squeeze')" id="qf-squeeze" class="px-2.5 py-1 rounded-lg text-slate-400 hover:text-white">🔥 Squeeze (≥3x)</button>
                         <button onclick="setQuickFilter('magnet')" id="qf-magnet" class="px-2.5 py-1 rounded-lg text-slate-400 hover:text-white">🎯 Magnet (&lt;2%)</button>
-                        <button onclick="setQuickFilter('megacoil')" id="qf-megacoil" class="px-2.5 py-1 rounded-lg text-slate-400 hover:text-white">💥 MegaCoil (&gt;70%)</button>
                     </div>
                     <input type="text" id="search-input" onkeyup="renderTable()" placeholder="Search symbol..." class="bg-navy-950 border border-navy-700 text-slate-200 text-xs rounded-xl px-3.5 py-1.5 focus:outline-none focus:border-rose-500 w-40 transition shadow-inner">
                 </div>
@@ -1390,7 +1429,7 @@ DASHBOARD_HTML = """
 
         function setQuickFilter(qf) {
             currentQuickFilter = qf;
-            ['all', 'strict', 'squeeze', 'magnet', 'megacoil'].forEach(id => {
+            ['all', 'inside', 'higher', 'lower', 'squeeze', 'magnet', 'megacoil'].forEach(id => {
                 const btn = document.getElementById(`qf-${id}`);
                 if (btn) {
                     if (id === qf) {
@@ -1817,11 +1856,11 @@ DASHBOARD_HTML = """
             const mcControls = document.getElementById('crypto-mc-controls');
             if (currentMarket === 'crypto_all' && currentStrategy !== 'oi_radar') {
                 if (mcControls) mcControls.classList.remove('hidden');
-                ['5m', '50m', '500m'].forEach(k => {
+                ['all', '5m', '50m', '500m'].forEach(k => {
                     const btn = document.getElementById(`btn-mc-${k}`);
                     if (btn) btn.className = 'px-2.5 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white';
                 });
-                const activeKey = currentMinMC >= 500000000 ? '500m' : (currentMinMC >= 50000000 ? '50m' : '5m');
+                const activeKey = currentMinMC >= 500000000 ? '500m' : (currentMinMC >= 50000000 ? '50m' : (currentMinMC >= 5000000 ? '5m' : 'all'));
                 const activeBtn = document.getElementById(`btn-mc-${activeKey}`);
                 if (activeBtn) activeBtn.className = 'px-2.5 py-1.5 rounded-lg transition-all text-white bg-indigo-600 font-bold shadow';
             } else {
@@ -1906,8 +1945,8 @@ DASHBOARD_HTML = """
                         <tr class="bg-navy-950/90 border-b border-navy-700 text-slate-400 font-semibold tracking-wider uppercase text-[11px]">
                             <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('market_cap')">Coin Pair & MC ↕</th>
                             <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('ltp')">Current LTP & Chg ↕</th>
-                            <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('compression_pct')">Compression % ↕</th>
-                            <th class="py-3.5 px-4">Target CPR Band (BC • P • TC)</th>
+                            <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('relationship')">CPR Relationship ↕</th>
+                            <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('cpr_width_pct')">Target CPR Band & Width ↕</th>
                             <th class="py-3.5 px-4">Breakout Triggers</th>
                             <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('oi_usd')">Open Interest ↕</th>
                             <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('squeeze_ratio')">Squeeze Risk ↕</th>
@@ -1975,8 +2014,14 @@ DASHBOARD_HTML = """
                 if (query && !item.symbol.toUpperCase().includes(query) && !item.clean_symbol.toUpperCase().includes(query)) {
                     return false;
                 }
-                if (currentQuickFilter === 'strict') {
-                    if (item.is_strict === false) return false;
+                if (currentQuickFilter === 'all') {
+                    // Show all coins
+                } else if (currentQuickFilter === 'inside') {
+                    if (!item.is_inside_value) return false;
+                } else if (currentQuickFilter === 'higher') {
+                    if (item.relationship !== 'Higher Value') return false;
+                } else if (currentQuickFilter === 'lower') {
+                    if (item.relationship !== 'Lower Value') return false;
                 } else if (currentQuickFilter === 'squeeze') {
                     if (!item.oi_info || item.oi_info.squeeze_ratio < 3.0) return false;
                 } else if (currentQuickFilter === 'magnet') {
@@ -1999,6 +2044,11 @@ DASHBOARD_HTML = """
                     valA = a.abs_dist || 0; valB = b.abs_dist || 0;
                 } else if (currentSort.column === 'compression_pct') {
                     valA = a.compression_pct || 0; valB = b.compression_pct || 0;
+                } else if (currentSort.column === 'cpr_width_pct') {
+                    valA = a.cpr_width_pct !== undefined ? a.cpr_width_pct : (a.curr_cpr ? a.curr_cpr.cpr_width_pct : 0);
+                    valB = b.cpr_width_pct !== undefined ? b.cpr_width_pct : (b.curr_cpr ? b.curr_cpr.cpr_width_pct : 0);
+                } else if (currentSort.column === 'relationship') {
+                    valA = a.relationship || ''; valB = b.relationship || '';
                 } else if (currentSort.column === 'market_cap') {
                     valA = a.market_cap || 0; valB = b.market_cap || 0;
                 } else if (currentSort.column === 'role') {
@@ -2165,14 +2215,14 @@ DASHBOARD_HTML = """
                                     <div class="${chgColor} text-[11px] font-sans font-medium">${chgSign}${item.change} (${chgSign}${item.change_pct}%)</div>
                                 </td>
                                 <td class="py-3.5 px-4">
-                                    <span class="inline-flex items-center px-2.5 py-1 rounded-md text-[11px] font-semibold border ${item.quality_tag.badge} font-sans">
-                                        ⚡ -${item.compression_pct}%
+                                    <span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold border ${item.rel_badge || item.quality_tag.badge} font-sans">
+                                        ${item.rel_icon || '⚡'} ${item.relationship || item.quality_tag.text}
                                     </span>
-                                    <div class="${item.position_status.class} text-[10px] font-sans mt-0.5">${item.position_status.text}</div>
+                                    <div class="text-[10px] font-sans mt-0.5 ${item.compression_pct > 0 ? 'text-amber-400' : 'text-slate-400'}">${item.compression_pct > 0 ? `-${item.compression_pct}% Compressed` : `+${Math.abs(item.compression_pct)}% Wider`}</div>
                                 </td>
                                 <td class="py-3.5 px-4 text-[11px]">
                                     <div class="text-slate-200 font-semibold"><span class="text-blue-400">${item.curr_cpr.cpr_bot}</span> • <span class="text-purple-400 font-bold">${item.curr_cpr.p}</span> • <span class="text-blue-400">${item.curr_cpr.cpr_top}</span></div>
-                                    <div class="text-[10px] text-amber-400 font-sans mt-0.5 font-medium">${item.target_label}</div>
+                                    <div class="text-[10px] text-cyan-400 font-sans mt-0.5 font-medium">CPR Width: ${(item.cpr_width_pct !== undefined ? item.cpr_width_pct : item.curr_cpr.cpr_width_pct)}%</div>
                                 </td>
                                 <td class="py-3.5 px-4 text-[11px]">
                                     <div><span class="text-slate-400 font-sans">${item.trigger_name_h}:</span> <span class="text-emerald-400 font-bold">${item.pm_high}</span></div>
@@ -2378,13 +2428,13 @@ def api_scan():
     mode = request.args.get("mode", "developing")
     min_mc = float(request.args.get("min_mc", 5_000_000))
     if market == "crypto_all":
-        symbols = YAHOO_MGR.get_dynamic_crypto_symbols(min_mc=min_mc, max_coins=750)
+        symbols = YAHOO_MGR.get_dynamic_crypto_symbols(min_mc=min_mc, max_coins=1500)
     else:
         watchlist_info = WATCHLISTS.get(market, WATCHLISTS["india_all"])
         symbols = watchlist_info["symbols"]
     
     results = []
-    workers = 32 if market == "crypto_all" else 10
+    workers = 40 if market == "crypto_all" else 10
     with ThreadPoolExecutor(max_workers=workers) as executor:
         if strategy == "virgin_cpr":
             futures = [executor.submit(process_virgin_cpr_daily, sym, 10) for sym in symbols]
