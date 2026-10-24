@@ -154,7 +154,7 @@ class YahooSessionManager:
             return f"${mc / 1_000:.0f}K"
         return f"${mc:.0f}"
 
-    def get_dynamic_crypto_symbols(self, min_mc=5_000_000, max_coins=350):
+    def get_dynamic_crypto_symbols(self, min_mc=5_000_000, max_coins=750):
         now = time.time()
         cache_key = f"DYNAMIC_CRYPTO_SYMBOLS_{min_mc}_{max_coins}"
         if cache_key in self.data_cache:
@@ -185,14 +185,14 @@ class YahooSessionManager:
                         if not base.isascii() or not base.isalnum(): continue
                         
                         coin_mc = mc_map.get(base, 0)
-                        # Filter for coins whose Market Cap is >= min_mc (e.g., $5M+)
-                        if coin_mc < min_mc:
+                        # Filter for coins whose Market Cap is >= min_mc (if specified)
+                        if min_mc > 0 and coin_mc < min_mc:
                             continue
 
                         try:
                             vol = float(t.get('quote_volume', 0) or 0)
                             price = float(t.get('last', 0) or 0)
-                            if vol >= 15000 and price > 0:
+                            if vol >= 2500 and price > 0:
                                 candidates.append((f"{base}-USD", coin_mc, vol))
                         except Exception:
                             pass
@@ -725,12 +725,16 @@ def process_cpr_setup(symbol, timeframe="monthly", mode="active"):
             
         base_prev_close = yesterday_c['close']
 
-    # Strict Inside Value Condition
+    # Inside Value Condition: Strict Containment or Near-Coil (tolerance <= 0.3% of base pivot)
     top_t, bot_t = cpr_target['cpr_top'], cpr_target['cpr_bot']
     top_b, bot_b = cpr_base['cpr_top'], cpr_base['cpr_bot']
+    p_b = cpr_base['p']
 
-    is_inside_value = (top_t <= top_b) and (bot_t >= bot_b)
-    if not is_inside_value:
+    is_strict = (top_t <= top_b) and (bot_t >= bot_b)
+    tol = p_b * 0.003
+    is_near_coil = (top_t <= (top_b + tol)) and (bot_t >= (bot_b - tol))
+
+    if not is_strict and not is_near_coil:
         return None
 
     width_target = cpr_target['cpr_width_pct']
@@ -748,24 +752,18 @@ def process_cpr_setup(symbol, timeframe="monthly", mode="active"):
     else:
         position_status = {"text": "Inside CPR (Coiling in Value)", "class": "text-amber-400 font-semibold"}
 
-    if compression_pct >= 70:
-        quality_tag = {"text": "⚡ Mega Coil (>70%)", "badge": "bg-purple-500/20 text-purple-300 border-purple-500/40"}
-    elif compression_pct >= 40:
-        quality_tag = {"text": "🔥 High Compression (>40%)", "badge": "bg-amber-500/20 text-amber-300 border-amber-500/40"}
+    if is_strict:
+        if compression_pct >= 70:
+            quality_tag = {"text": "⚡ Mega Coil (>70%)", "badge": "bg-purple-500/20 text-purple-300 border-purple-500/40"}
+        elif compression_pct >= 40:
+            quality_tag = {"text": "🔥 High Compression (>40%)", "badge": "bg-amber-500/20 text-amber-300 border-amber-500/40"}
+        else:
+            quality_tag = {"text": "🟡 Strict Inside Value", "badge": "bg-yellow-500/20 text-yellow-300 border-yellow-500/40"}
     else:
-        quality_tag = {"text": "🟡 Inside Value", "badge": "bg-yellow-500/20 text-yellow-300 border-yellow-500/40"}
+        quality_tag = {"text": "🌀 Near Coil (95%+)", "badge": "bg-cyan-500/20 text-cyan-300 border-cyan-500/40"}
 
     clean_symbol = symbol.replace(".NS", "").replace("^", "")
     oi_info = YAHOO_MGR.get_crypto_derivatives(symbol) if is_crypto else None
-
-    market_cap = None
-    mc_formatted = None
-    if is_crypto:
-        base_sym = clean_symbol.replace("-USD", "").replace("USDT", "").replace("USD", "").upper()
-        mc_map = YAHOO_MGR.get_crypto_market_caps()
-        if base_sym in mc_map:
-            market_cap = mc_map[base_sym]
-            mc_formatted = YAHOO_MGR.format_market_cap(market_cap)
 
     market_cap = None
     mc_formatted = None
@@ -782,6 +780,7 @@ def process_cpr_setup(symbol, timeframe="monthly", mode="active"):
         "market_cap": market_cap,
         "mc_formatted": mc_formatted,
         "strategy": "inside_value",
+        "is_strict": is_strict,
         "timeframe": timeframe,
         "mode": mode,
         "target_label": target_label,
@@ -1068,9 +1067,10 @@ DASHBOARD_HTML = """
                     <!-- Quick Filter Pills -->
                     <div id="quick-filters" class="flex items-center gap-1 bg-navy-950 p-1 rounded-xl border border-navy-700 text-[11px]">
                         <button onclick="setQuickFilter('all')" id="qf-all" class="px-2.5 py-1 rounded-lg bg-navy-800 text-white font-semibold">All</button>
-                        <button onclick="setQuickFilter('squeeze')" id="qf-squeeze" class="px-2.5 py-1 rounded-lg text-slate-400 hover:text-white">⚡ Squeeze (≥3x)</button>
+                        <button onclick="setQuickFilter('strict')" id="qf-strict" class="px-2.5 py-1 rounded-lg text-slate-400 hover:text-white">⚡ Strict Only</button>
+                        <button onclick="setQuickFilter('squeeze')" id="qf-squeeze" class="px-2.5 py-1 rounded-lg text-slate-400 hover:text-white">🔥 Squeeze (≥3x)</button>
                         <button onclick="setQuickFilter('magnet')" id="qf-magnet" class="px-2.5 py-1 rounded-lg text-slate-400 hover:text-white">🎯 Magnet (&lt;2%)</button>
-                        <button onclick="setQuickFilter('megacoil')" id="qf-megacoil" class="px-2.5 py-1 rounded-lg text-slate-400 hover:text-white">🔥 Coil (&gt;70%)</button>
+                        <button onclick="setQuickFilter('megacoil')" id="qf-megacoil" class="px-2.5 py-1 rounded-lg text-slate-400 hover:text-white">💥 MegaCoil (&gt;70%)</button>
                     </div>
                     <input type="text" id="search-input" onkeyup="renderTable()" placeholder="Search symbol..." class="bg-navy-950 border border-navy-700 text-slate-200 text-xs rounded-xl px-3.5 py-1.5 focus:outline-none focus:border-rose-500 w-40 transition shadow-inner">
                 </div>
@@ -1390,7 +1390,7 @@ DASHBOARD_HTML = """
 
         function setQuickFilter(qf) {
             currentQuickFilter = qf;
-            ['all', 'squeeze', 'magnet', 'megacoil'].forEach(id => {
+            ['all', 'strict', 'squeeze', 'magnet', 'megacoil'].forEach(id => {
                 const btn = document.getElementById(`qf-${id}`);
                 if (btn) {
                     if (id === qf) {
@@ -1975,7 +1975,9 @@ DASHBOARD_HTML = """
                 if (query && !item.symbol.toUpperCase().includes(query) && !item.clean_symbol.toUpperCase().includes(query)) {
                     return false;
                 }
-                if (currentQuickFilter === 'squeeze') {
+                if (currentQuickFilter === 'strict') {
+                    if (item.is_strict === false) return false;
+                } else if (currentQuickFilter === 'squeeze') {
                     if (!item.oi_info || item.oi_info.squeeze_ratio < 3.0) return false;
                 } else if (currentQuickFilter === 'magnet') {
                     if ((item.abs_dist === undefined ? 999 : item.abs_dist) > 2.0) return false;
@@ -2376,13 +2378,13 @@ def api_scan():
     mode = request.args.get("mode", "developing")
     min_mc = float(request.args.get("min_mc", 5_000_000))
     if market == "crypto_all":
-        symbols = YAHOO_MGR.get_dynamic_crypto_symbols(min_mc=min_mc, max_coins=350)
+        symbols = YAHOO_MGR.get_dynamic_crypto_symbols(min_mc=min_mc, max_coins=750)
     else:
         watchlist_info = WATCHLISTS.get(market, WATCHLISTS["india_all"])
         symbols = watchlist_info["symbols"]
     
     results = []
-    workers = 24 if market == "crypto_all" else 10
+    workers = 32 if market == "crypto_all" else 10
     with ThreadPoolExecutor(max_workers=workers) as executor:
         if strategy == "virgin_cpr":
             futures = [executor.submit(process_virgin_cpr_daily, sym, 10) for sym in symbols]
