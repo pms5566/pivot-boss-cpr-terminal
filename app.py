@@ -2828,45 +2828,86 @@ DASHBOARD_HTML = """
 def index():
     return render_template_string(DASHBOARD_HTML)
 
+@app.route("/api/debug")
+def api_debug():
+    import traceback
+    info = {}
+    try:
+        r1 = requests.get("https://api.binance.com/api/v3/ping", timeout=3)
+        info["api_binance"] = {"status": r1.status_code, "text": r1.text}
+    except Exception as e:
+        info["api_binance"] = {"error": str(e)}
+
+    try:
+        r2 = requests.get("https://data-api.binance.vision/api/v3/ping", timeout=3)
+        info["binance_vision"] = {"status": r2.status_code, "text": r2.text}
+    except Exception as e:
+        info["binance_vision"] = {"error": str(e)}
+
+    try:
+        r3 = requests.get("https://fapi.binance.com/fapi/v1/ping", timeout=3)
+        info["fapi_binance"] = {"status": r3.status_code, "text": r3.text}
+    except Exception as e:
+        info["fapi_binance"] = {"error": str(e)}
+
+    try:
+        syms = BINANCE_MGR.get_binance_symbols(min_quote_vol=0, max_coins=5)
+        info["sample_symbols"] = syms
+    except Exception as e:
+        info["sample_symbols_error"] = str(e)
+        info["traceback"] = traceback.format_exc()
+
+    return jsonify(info)
+
 @app.route("/api/scan")
 def api_scan():
-    strategy = request.args.get("strategy", "virgin_cpr")
-    market = request.args.get("market", "crypto_all")
-    timeframe = request.args.get("timeframe", "daily")
-    mode = request.args.get("mode", "developing")
-    min_mc = float(request.args.get("min_mc", 0))
-    if market == "crypto_all":
-        symbols = BINANCE_MGR.get_binance_symbols(min_quote_vol=min_mc, max_coins=800)
-    else:
-        watchlist_info = WATCHLISTS.get(market, WATCHLISTS["india_all"])
-        symbols = watchlist_info["symbols"]
-    
-    results = []
-    workers = 45 if market == "crypto_all" else 10
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        if strategy == "virgin_cpr":
-            futures = [executor.submit(process_virgin_cpr_daily, sym, 10) for sym in symbols]
-            for f in futures:
-                res_list = f.result()
-                if res_list:
-                    results.extend(res_list)
-            results.sort(key=lambda x: x['abs_dist'])
+    import traceback
+    try:
+        strategy = request.args.get("strategy", "virgin_cpr")
+        market = request.args.get("market", "crypto_all")
+        timeframe = request.args.get("timeframe", "daily")
+        mode = request.args.get("mode", "developing")
+        min_mc = float(request.args.get("min_mc", 0))
+        if market == "crypto_all":
+            # On serverless environments, limit max_coins to prevent function execution timeout
+            is_serverless = os.environ.get("VERCEL") == "1" or os.environ.get("AWS_LAMBDA_FUNCTION_NAME") is not None
+            max_limit = 200 if is_serverless else 800
+            symbols = BINANCE_MGR.get_binance_symbols(min_quote_vol=min_mc, max_coins=max_limit)
         else:
-            futures = [executor.submit(process_cpr_setup, sym, timeframe, mode) for sym in symbols]
-            for f in futures:
-                res = f.result()
-                if res:
-                    results.append(res)
-            results.sort(key=lambda x: x['compression_pct'], reverse=True)
-    
-    return jsonify({
-        "strategy": strategy,
-        "market": market,
-        "timeframe": timeframe,
-        "mode": mode,
-        "count": len(results),
-        "results": results
-    })
+            watchlist_info = WATCHLISTS.get(market, WATCHLISTS["india_all"])
+            symbols = watchlist_info["symbols"]
+        
+        results = []
+        workers = 35 if market == "crypto_all" else 10
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            if strategy == "virgin_cpr":
+                futures = [executor.submit(process_virgin_cpr_daily, sym, 10) for sym in symbols]
+                for f in futures:
+                    res_list = f.result()
+                    if res_list:
+                        results.extend(res_list)
+                results.sort(key=lambda x: x['abs_dist'])
+            else:
+                futures = [executor.submit(process_cpr_setup, sym, timeframe, mode) for sym in symbols]
+                for f in futures:
+                    res = f.result()
+                    if res:
+                        results.append(res)
+                results.sort(key=lambda x: x['compression_pct'], reverse=True)
+        
+        return jsonify({
+            "strategy": strategy,
+            "market": market,
+            "timeframe": timeframe,
+            "mode": mode,
+            "count": len(results),
+            "results": results
+        })
+    except Exception as e:
+        return jsonify({
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }), 500
 
 @app.route("/api/crypto/oi")
 def api_crypto_oi():
