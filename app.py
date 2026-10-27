@@ -127,34 +127,42 @@ class BinanceAPIManager:
 
     def get_binance_symbols(self, min_quote_vol=0, max_coins=800):
         now = time.time()
-        if self.ticker_cache and (now - self.ticker_time < 60):
+        if self.ticker_cache and isinstance(self.ticker_cache, list) and (now - self.ticker_time < 60):
             tickers = self.ticker_cache
         else:
+            tickers = []
             try:
-                r = self.session.get("https://api.binance.com/api/v3/ticker/24hr", timeout=6)
-                tickers = r.json()
-                if isinstance(tickers, list):
+                r = self.session.get("https://data-api.binance.vision/api/v3/ticker/24hr", timeout=5)
+                data = r.json()
+                if isinstance(data, list):
+                    tickers = data
                     self.ticker_cache = tickers
                     self.ticker_time = now
             except Exception:
+                pass
+
+            if not tickers:
                 try:
-                    r = self.session.get("https://data-api.binance.vision/api/v3/ticker/24hr", timeout=6)
-                    tickers = r.json()
-                    if isinstance(tickers, list):
+                    r = self.session.get("https://api.binance.com/api/v3/ticker/24hr", timeout=5)
+                    data = r.json()
+                    if isinstance(data, list):
+                        tickers = data
                         self.ticker_cache = tickers
                         self.ticker_time = now
                 except Exception:
-                    tickers = self.ticker_cache
+                    pass
 
         symbols = []
         stables_junk = {'USDCUSDT', 'FDUSDUSDT', 'TUSDUSDT', 'USDPUSDT', 'EURUSDT', 'BUSDUSDT', 'AEURUSDT', 'DAIUSDT'}
-        for t in tickers:
-            sym = t.get("symbol", "")
-            if sym.endswith("USDT") and sym not in stables_junk:
-                q_vol = float(t.get("quoteVolume", 0) or 0)
-                price = float(t.get("lastPrice", 0) or 0)
-                if q_vol >= min_quote_vol and price > 0:
-                    symbols.append((sym, q_vol))
+        if isinstance(tickers, list):
+            for t in tickers:
+                if not isinstance(t, dict): continue
+                sym = t.get("symbol", "")
+                if sym.endswith("USDT") and sym not in stables_junk:
+                    q_vol = float(t.get("quoteVolume", 0) or 0)
+                    price = float(t.get("lastPrice", 0) or 0)
+                    if q_vol >= min_quote_vol and price > 0:
+                        symbols.append((sym, q_vol))
         
         symbols.sort(key=lambda x: x[1], reverse=True)
         priority = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "SUIUSDT", "NEARUSDT", "PEPEUSDT", "LINKUSDT", "LTCUSDT"]
@@ -176,12 +184,19 @@ class BinanceAPIManager:
         # Daily bars
         d_raw = []
         try:
-            r_d = self.session.get(f"https://api.binance.com/api/v3/klines?symbol={sym}&interval=1d&limit=45", timeout=4)
-            d_raw = r_d.json()
+            r_d = self.session.get(f"https://data-api.binance.vision/api/v3/klines?symbol={sym}&interval=1d&limit=45", timeout=4)
+            data = r_d.json()
+            if isinstance(data, list):
+                d_raw = data
         except Exception:
+            pass
+
+        if not d_raw:
             try:
-                r_d = self.session.get(f"https://data-api.binance.vision/api/v3/klines?symbol={sym}&interval=1d&limit=45", timeout=4)
-                d_raw = r_d.json()
+                r_d = self.session.get(f"https://api.binance.com/api/v3/klines?symbol={sym}&interval=1d&limit=45", timeout=4)
+                data = r_d.json()
+                if isinstance(data, list):
+                    d_raw = data
             except Exception:
                 d_raw = []
 
@@ -204,12 +219,19 @@ class BinanceAPIManager:
         # Monthly bars
         m_raw = []
         try:
-            r_m = self.session.get(f"https://api.binance.com/api/v3/klines?symbol={sym}&interval=1M&limit=12", timeout=4)
-            m_raw = r_m.json()
+            r_m = self.session.get(f"https://data-api.binance.vision/api/v3/klines?symbol={sym}&interval=1M&limit=12", timeout=4)
+            data = r_m.json()
+            if isinstance(data, list):
+                m_raw = data
         except Exception:
+            pass
+
+        if not m_raw:
             try:
-                r_m = self.session.get(f"https://data-api.binance.vision/api/v3/klines?symbol={sym}&interval=1M&limit=12", timeout=4)
-                m_raw = r_m.json()
+                r_m = self.session.get(f"https://api.binance.com/api/v3/klines?symbol={sym}&interval=1M&limit=12", timeout=4)
+                data = r_m.json()
+                if isinstance(data, list):
+                    m_raw = data
             except Exception:
                 m_raw = []
 
@@ -288,18 +310,26 @@ class BinanceAPIManager:
         if not sym.endswith("USDT"):
             sym = sym + "USDT"
         now = time.time()
-        if not self.ticker_cache or (now - self.ticker_time >= 60):
+        if not self.ticker_cache or not isinstance(self.ticker_cache, list) or (now - self.ticker_time >= 60):
             try:
-                r = self.session.get("https://api.binance.com/api/v3/ticker/24hr", timeout=6)
+                r = self.session.get("https://data-api.binance.vision/api/v3/ticker/24hr", timeout=5)
                 tickers = r.json()
                 if isinstance(tickers, list):
                     self.ticker_cache = tickers
                     self.ticker_time = now
             except Exception:
-                pass
-        for t in self.ticker_cache:
-            if t.get("symbol") == sym:
-                return float(t.get("quoteVolume", 0) or 0)
+                try:
+                    r = self.session.get("https://api.binance.com/api/v3/ticker/24hr", timeout=5)
+                    tickers = r.json()
+                    if isinstance(tickers, list):
+                        self.ticker_cache = tickers
+                        self.ticker_time = now
+                except Exception:
+                    pass
+        if isinstance(self.ticker_cache, list):
+            for t in self.ticker_cache:
+                if isinstance(t, dict) and t.get("symbol") == sym:
+                    return float(t.get("quoteVolume", 0) or 0)
         return 0.0
 
     def get_crypto_derivatives(self, symbol, fetch_oi=True):
@@ -2833,29 +2863,25 @@ def api_debug():
     import traceback
     info = {}
     try:
-        r1 = requests.get("https://api.binance.com/api/v3/ping", timeout=3)
-        info["api_binance"] = {"status": r1.status_code, "text": r1.text}
+        r2 = requests.get("https://data-api.binance.vision/api/v3/ticker/24hr", timeout=5)
+        tickers = r2.json()
+        info["binance_vision_tickers"] = {
+            "status": r2.status_code,
+            "is_list": isinstance(tickers, list),
+            "count": len(tickers) if isinstance(tickers, list) else 0
+        }
     except Exception as e:
-        info["api_binance"] = {"error": str(e)}
+        info["binance_vision_tickers"] = {"error": str(e)}
 
     try:
-        r2 = requests.get("https://data-api.binance.vision/api/v3/ping", timeout=3)
-        info["binance_vision"] = {"status": r2.status_code, "text": r2.text}
+        r_k = requests.get("https://data-api.binance.vision/api/v3/klines?symbol=BTCUSDT&interval=1d&limit=5", timeout=5)
+        k_data = r_k.json()
+        info["binance_vision_klines"] = {
+            "status": r_k.status_code,
+            "bars": len(k_data) if isinstance(k_data, list) else 0
+        }
     except Exception as e:
-        info["binance_vision"] = {"error": str(e)}
-
-    try:
-        r3 = requests.get("https://fapi.binance.com/fapi/v1/ping", timeout=3)
-        info["fapi_binance"] = {"status": r3.status_code, "text": r3.text}
-    except Exception as e:
-        info["fapi_binance"] = {"error": str(e)}
-
-    try:
-        syms = BINANCE_MGR.get_binance_symbols(min_quote_vol=0, max_coins=5)
-        info["sample_symbols"] = syms
-    except Exception as e:
-        info["sample_symbols_error"] = str(e)
-        info["traceback"] = traceback.format_exc()
+        info["binance_vision_klines"] = {"error": str(e)}
 
     return jsonify(info)
 
