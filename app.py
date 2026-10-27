@@ -16,6 +16,7 @@ import datetime
 import threading
 import requests
 import urllib.parse
+from urllib3.util import connection
 from concurrent.futures import ThreadPoolExecutor
 from flask import Flask, jsonify, render_template_string, request
 
@@ -83,6 +84,406 @@ WATCHLISTS = {
         ]
     }
 }
+
+class BinanceAPIManager:
+    def __init__(self):
+        self.session = requests.Session()
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36'
+        })
+        adapter = requests.adapters.HTTPAdapter(pool_connections=60, pool_maxsize=60, max_retries=1)
+        self.session.mount('https://', adapter)
+        self.session.mount('http://', adapter)
+        self._init_dns()
+        self.ticker_cache = []
+        self.ticker_time = 0
+        self.f_ticker_cache = {}
+        self.f_ticker_time = 0
+        self.funding_cache = {}
+        self.funding_time = 0
+        self.oi_cache = {}
+        self.bars_cache = {}
+
+    def _init_dns(self):
+        def resolve_doh(domain):
+            try:
+                r = requests.get(f'https://1.1.1.1/dns-query?name={domain}&type=A', headers={'accept': 'application/dns-json'}, timeout=4)
+                return [ans['data'] for ans in r.json().get('Answer', []) if '.' in ans.get('data', '') and not ans.get('data', '').endswith('.net.')]
+            except Exception:
+                return []
+
+        self.dns_cache = {
+            'api.binance.com': resolve_doh('api.binance.com'),
+            'fapi.binance.com': resolve_doh('fapi.binance.com')
+        }
+        _orig = connection.create_connection
+        dns_map = self.dns_cache
+        def patched(addr, *args, **kwargs):
+            h, p = addr
+            if h in dns_map and dns_map[h]:
+                return _orig((dns_map[h][0], p), *args, **kwargs)
+            return _orig(addr, *args, **kwargs)
+        connection.create_connection = patched
+
+    def get_binance_symbols(self, min_quote_vol=0, max_coins=800):
+        now = time.time()
+        if self.ticker_cache and (now - self.ticker_time < 60):
+            tickers = self.ticker_cache
+        else:
+            try:
+                r = self.session.get("https://api.binance.com/api/v3/ticker/24hr", timeout=6)
+                tickers = r.json()
+                if isinstance(tickers, list):
+                    self.ticker_cache = tickers
+                    self.ticker_time = now
+            except Exception:
+                try:
+                    r = self.session.get("https://data-api.binance.vision/api/v3/ticker/24hr", timeout=6)
+                    tickers = r.json()
+                    if isinstance(tickers, list):
+                        self.ticker_cache = tickers
+                        self.ticker_time = now
+                except Exception:
+                    tickers = self.ticker_cache
+
+        symbols = []
+        stables_junk = {'USDCUSDT', 'FDUSDUSDT', 'TUSDUSDT', 'USDPUSDT', 'EURUSDT', 'BUSDUSDT', 'AEURUSDT', 'DAIUSDT'}
+        for t in tickers:
+            sym = t.get("symbol", "")
+            if sym.endswith("USDT") and sym not in stables_junk:
+                q_vol = float(t.get("quoteVolume", 0) or 0)
+                price = float(t.get("lastPrice", 0) or 0)
+                if q_vol >= min_quote_vol and price > 0:
+                    symbols.append((sym, q_vol))
+        
+        symbols.sort(key=lambda x: x[1], reverse=True)
+        priority = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "SUIUSDT", "NEARUSDT", "PEPEUSDT", "LINKUSDT", "LTCUSDT"]
+        sym_list = [s[0] for s in symbols]
+        sorted_symbols = [p for p in priority if p in sym_list] + [s for s in sym_list if s not in priority]
+        return sorted_symbols[:max_coins]
+
+    def fetch_market_bars(self, symbol):
+        sym = symbol.replace("-USD", "USDT").replace(".NS", "").replace("^", "")
+        if not sym.endswith("USDT") and not sym.endswith("USDC"):
+            sym = sym + "USDT"
+
+        now = time.time()
+        if sym in self.bars_cache:
+            ts, m_bars, d_bars = self.bars_cache[sym]
+            if now - ts < 60:
+                return m_bars, d_bars
+
+        # Daily bars
+        d_raw = []
+        try:
+            r_d = self.session.get(f"https://api.binance.com/api/v3/klines?symbol={sym}&interval=1d&limit=45", timeout=4)
+            d_raw = r_d.json()
+        except Exception:
+            try:
+                r_d = self.session.get(f"https://data-api.binance.vision/api/v3/klines?symbol={sym}&interval=1d&limit=45", timeout=4)
+                d_raw = r_d.json()
+            except Exception:
+                d_raw = []
+
+        if not isinstance(d_raw, list) or len(d_raw) < 5:
+            return [], []
+
+        daily_candles = []
+        for b in d_raw:
+            dt = datetime.datetime.fromtimestamp(b[0] / 1000.0, tz=datetime.timezone.utc).strftime("%Y-%m-%d")
+            daily_candles.append({
+                "date": dt,
+                "time": int(b[0] / 1000),
+                "open": float(b[1]),
+                "high": float(b[2]),
+                "low": float(b[3]),
+                "close": float(b[4]),
+                "volume": float(b[5])
+            })
+
+        # Monthly bars
+        m_raw = []
+        try:
+            r_m = self.session.get(f"https://api.binance.com/api/v3/klines?symbol={sym}&interval=1M&limit=12", timeout=4)
+            m_raw = r_m.json()
+        except Exception:
+            try:
+                r_m = self.session.get(f"https://data-api.binance.vision/api/v3/klines?symbol={sym}&interval=1M&limit=12", timeout=4)
+                m_raw = r_m.json()
+            except Exception:
+                m_raw = []
+
+        monthly_bars = []
+        if isinstance(m_raw, list):
+            for b in m_raw:
+                dt = datetime.datetime.fromtimestamp(b[0] / 1000.0, tz=datetime.timezone.utc).strftime("%Y-%m-%d")
+                monthly_bars.append({
+                    "date": dt,
+                    "time": int(b[0] / 1000),
+                    "open": float(b[1]),
+                    "high": float(b[2]),
+                    "low": float(b[3]),
+                    "close": float(b[4]),
+                    "volume": float(b[5])
+                })
+
+        self.bars_cache[sym] = (now, monthly_bars, daily_candles)
+        return monthly_bars, daily_candles
+
+    def get_futures_tickers(self):
+        now = time.time()
+        if self.f_ticker_cache and (now - self.f_ticker_time < 30):
+            return self.f_ticker_cache
+        try:
+            r = self.session.get("https://fapi.binance.com/fapi/v1/ticker/24hr", timeout=5)
+            data = r.json()
+            if isinstance(data, list):
+                self.f_ticker_cache = {t["symbol"]: t for t in data}
+                self.f_ticker_time = now
+        except Exception:
+            pass
+        return self.f_ticker_cache
+
+    def get_funding_rates(self):
+        now = time.time()
+        if self.funding_cache and (now - self.funding_time < 60):
+            return self.funding_cache
+        try:
+            r = self.session.get("https://fapi.binance.com/fapi/v1/premiumIndex", timeout=5)
+            data = r.json()
+            if isinstance(data, list):
+                self.funding_cache = {t["symbol"]: t for t in data}
+                self.funding_time = now
+        except Exception:
+            pass
+        return self.funding_cache
+
+    def get_open_interest(self, symbol):
+        now = time.time()
+        cached = self.oi_cache.get(symbol)
+        if cached and (now - cached[0] < 60):
+            return cached[1]
+        try:
+            r = self.session.get(f"https://fapi.binance.com/fapi/v1/openInterest?symbol={symbol}", timeout=4)
+            d = r.json()
+            oi = float(d.get("openInterest", 0) or 0)
+            self.oi_cache[symbol] = (now, oi)
+            return oi
+        except Exception:
+            return 0.0
+
+    def format_usd(self, val):
+        if val is None or val <= 0:
+            return None
+        if val >= 1_000_000_000:
+            return f"${val / 1_000_000_000:.2f}B"
+        if val >= 1_000_000:
+            return f"${val / 1_000_000:.1f}M"
+        if val >= 1_000:
+            return f"${val / 1_000:.0f}K"
+        return f"${val:.1f}"
+
+    def get_spot_volume(self, symbol):
+        sym = symbol.replace("-USD", "USDT").replace(".NS", "").replace("^", "")
+        if not sym.endswith("USDT"):
+            sym = sym + "USDT"
+        now = time.time()
+        if not self.ticker_cache or (now - self.ticker_time >= 60):
+            try:
+                r = self.session.get("https://api.binance.com/api/v3/ticker/24hr", timeout=6)
+                tickers = r.json()
+                if isinstance(tickers, list):
+                    self.ticker_cache = tickers
+                    self.ticker_time = now
+            except Exception:
+                pass
+        for t in self.ticker_cache:
+            if t.get("symbol") == sym:
+                return float(t.get("quoteVolume", 0) or 0)
+        return 0.0
+
+    def get_crypto_derivatives(self, symbol, fetch_oi=True):
+        sym = symbol.replace("-USD", "USDT").replace(".NS", "").replace("^", "")
+        if not sym.endswith("USDT"):
+            sym = sym + "USDT"
+
+        f_tickers = self.get_futures_tickers()
+        funding_map = self.get_funding_rates()
+
+        f_data = f_tickers.get(sym)
+        if not f_data and not sym.startswith("1000"):
+            sym_1000 = "1000" + sym
+            if sym_1000 in f_tickers:
+                sym = sym_1000
+                f_data = f_tickers[sym]
+
+        if not f_data:
+            spot_vol = self.get_spot_volume(symbol)
+            if spot_vol > 0:
+                return {
+                    "oi_usd": 0,
+                    "oi_formatted": "-",
+                    "vol_24h_usd": spot_vol,
+                    "vol_formatted": self.format_usd(spot_vol),
+                    "squeeze_ratio": 0.0,
+                    "squeeze_badge": "SPOT ONLY",
+                    "squeeze_class": "bg-slate-500/20 text-slate-300 border-slate-500/40",
+                    "funding_pct": 0.0,
+                    "funding_formatted": "-",
+                    "funding_bias": "Spot Asset",
+                    "squeeze_direction": "Spot Trading",
+                    "squeeze_dir_class": "text-slate-400"
+                }
+            return None
+
+        price = float(f_data.get("lastPrice", 0) or 0)
+        vol_usd = float(f_data.get("quoteVolume", 0) or 0)
+        
+        oi_usd = 0
+        squeeze_ratio = 0.0
+        if fetch_oi and (sym in self.oi_cache or vol_usd >= 25_000_000):
+            oi_coins = self.get_open_interest(sym)
+            oi_usd = oi_coins * price
+            squeeze_ratio = round(oi_usd / vol_usd, 2) if vol_usd > 0 else 0.0
+
+        fund_info = funding_map.get(sym, {})
+        funding_pct = float(fund_info.get("lastFundingRate", 0) or 0) * 100.0
+
+        if squeeze_ratio >= 3.0:
+            squeeze_badge = "CRITICAL SQUEEZE"
+            squeeze_class = "bg-rose-500/20 text-rose-300 border-rose-500/40 animate-pulse"
+        elif squeeze_ratio >= 1.5:
+            squeeze_badge = "HIGH LEVERAGE"
+            squeeze_class = "bg-amber-500/20 text-amber-300 border-amber-500/40"
+        elif squeeze_ratio >= 0.8:
+            squeeze_badge = "HEALTHY"
+            squeeze_class = "bg-emerald-500/20 text-emerald-300 border-emerald-500/40"
+        elif squeeze_ratio > 0:
+            squeeze_badge = "LOW LEVERAGE"
+            squeeze_class = "bg-slate-500/20 text-slate-300 border-slate-500/40"
+        else:
+            squeeze_badge = "PERP"
+            squeeze_class = "bg-indigo-500/20 text-indigo-300 border-indigo-500/40"
+
+        if funding_pct > 0.05:
+            funding_bias = "Crowded Longs (Short Squeeze Fuel)"
+        elif funding_pct < -0.05:
+            funding_bias = "Crowded Shorts (Long Squeeze Fuel)"
+        elif funding_pct > 0.005:
+            funding_bias = "Mildly Long"
+        elif funding_pct < -0.005:
+            funding_bias = "Mildly Short"
+        else:
+            funding_bias = "Neutral Funding"
+
+        return {
+            "oi_usd": oi_usd,
+            "oi_formatted": self.format_usd(oi_usd) if oi_usd > 0 else "-",
+            "vol_24h_usd": vol_usd,
+            "vol_formatted": self.format_usd(vol_usd),
+            "squeeze_ratio": squeeze_ratio,
+            "squeeze_badge": squeeze_badge,
+            "squeeze_class": squeeze_class,
+            "funding_pct": round(funding_pct, 4),
+            "funding_formatted": f"{funding_pct:+.4f}%",
+            "funding_bias": funding_bias,
+            "squeeze_direction": "Short Squeeze Fuel" if funding_pct < -0.01 else ("Long Squeeze Fuel" if funding_pct > 0.03 else "Balanced"),
+            "squeeze_dir_class": "text-emerald-400" if funding_pct < -0.01 else ("text-rose-400" if funding_pct > 0.03 else "text-slate-400")
+        }
+
+    def get_crypto_oi_radar(self, search_coin="BTC", watchlist=None):
+        f_tickers = self.get_futures_tickers()
+        funding_map = self.get_funding_rates()
+
+        all_items = []
+        for sym, t in f_tickers.items():
+            if not sym.endswith("USDT"):
+                continue
+            vol = float(t.get("quoteVolume", 0) or 0)
+            price = float(t.get("lastPrice", 0) or 0)
+            chg = float(t.get("priceChangePercent", 0) or 0)
+            if vol < 500_000 or price <= 0:
+                continue
+
+            clean = sym.replace("USDT", "")
+            fund_info = funding_map.get(sym, {})
+            fund_pct = float(fund_info.get("lastFundingRate", 0) or 0) * 100.0
+
+            all_items.append({
+                "symbol": sym,
+                "clean_symbol": clean,
+                "price": price,
+                "chg_pct": chg,
+                "vol_usd": vol,
+                "vol_formatted": self.format_usd(vol),
+                "funding_pct": fund_pct,
+                "funding_formatted": f"{fund_pct:+.4f}%"
+            })
+
+        top_oi = sorted(all_items, key=lambda x: x["vol_usd"], reverse=True)[:5]
+        top_funding = sorted(all_items, key=lambda x: abs(x["funding_pct"]), reverse=True)[:5]
+
+        # Top squeeze ratios from high-volume contracts
+        top_squeezes = []
+        try:
+            with ThreadPoolExecutor(max_workers=10) as ex:
+                derivs = list(ex.map(lambda it: (it, self.get_crypto_derivatives(it["symbol"])), top_oi[:5]))
+                for it, d in derivs:
+                    if d and d["squeeze_ratio"] > 0:
+                        top_squeezes.append({
+                            "clean_symbol": it["clean_symbol"],
+                            "squeeze_ratio": d["squeeze_ratio"],
+                            "squeeze_badge": d["squeeze_badge"],
+                            "squeeze_class": d["squeeze_class"],
+                            "funding_formatted": d["funding_formatted"]
+                        })
+            top_squeezes.sort(key=lambda x: x["squeeze_ratio"], reverse=True)
+        except Exception:
+            pass
+
+        # Hero coin lookup
+        search_sym = search_coin.upper().replace("USDT", "") + "USDT"
+        hero_deriv = self.get_crypto_derivatives(search_sym)
+        hero = None
+        actual_sym = search_sym if search_sym in f_tickers else ("1000" + search_sym)
+        if hero_deriv and actual_sym in f_tickers:
+            t = f_tickers[actual_sym]
+            hero = {
+                "symbol": actual_sym,
+                "clean_symbol": search_coin.upper().replace("USDT", ""),
+                "price": float(t.get("lastPrice", 0) or 0),
+                "chg_pct": float(t.get("priceChangePercent", 0) or 0),
+                **hero_deriv
+            }
+
+        # Watchlist lookup
+        wl_items = []
+        if watchlist:
+            for w in watchlist:
+                w_sym = w.upper().replace("USDT", "") + "USDT"
+                d = self.get_crypto_derivatives(w_sym)
+                actual_w = w_sym if w_sym in f_tickers else ("1000" + w_sym)
+                if d and actual_w in f_tickers:
+                    t = f_tickers[actual_w]
+                    wl_items.append({
+                        "symbol": actual_w,
+                        "clean_symbol": w.upper().replace("USDT", ""),
+                        "price": float(t.get("lastPrice", 0) or 0),
+                        "chg_pct": float(t.get("priceChangePercent", 0) or 0),
+                        **d
+                    })
+
+        return {
+            "hero": hero,
+            "watchlist": wl_items,
+            "leaderboards": {
+                "top_squeezes": top_squeezes,
+                "top_oi": top_oi,
+                "top_funding": top_funding
+            }
+        }
+
+BINANCE_MGR = BinanceAPIManager()
 
 class YahooSessionManager:
     def __init__(self):
@@ -603,7 +1004,11 @@ def calculate_cpr_and_pivots(h, l, c, decimals=2):
 
 def process_cpr_setup(symbol, timeframe="monthly", mode="active"):
     """Inside Value CPR calculation"""
-    monthly_bars, daily_candles = YAHOO_MGR.fetch_market_bars(symbol)
+    is_crypto = symbol.endswith("USDT") or symbol.endswith("USDC") or ("-USD" in symbol)
+    if is_crypto:
+        monthly_bars, daily_candles = BINANCE_MGR.fetch_market_bars(symbol)
+    else:
+        monthly_bars, daily_candles = YAHOO_MGR.fetch_market_bars(symbol)
     
     if timeframe == "quarterly":
         if not daily_candles: return None
@@ -636,10 +1041,9 @@ def process_cpr_setup(symbol, timeframe="monthly", mode="active"):
         prev_q = sorted_quarters[-3]
 
         last_price = current_q['close']
-        if last_price < 0.001: return None
+        if last_price < 0.000001: return None
 
-        is_crypto = "-USD" in symbol
-        dec = 4 if is_crypto and last_price < 1.0 else (3 if is_crypto and last_price < 10.0 else 2)
+        dec = 6 if is_crypto and last_price < 0.01 else (4 if is_crypto and last_price < 1.0 else (3 if is_crypto and last_price < 10.0 else 2))
 
         if mode == "developing":
             cpr_target = calculate_cpr_and_pivots(current_q['high'], current_q['low'], current_q['close'], dec)
@@ -669,16 +1073,18 @@ def process_cpr_setup(symbol, timeframe="monthly", mode="active"):
         prev_m = monthly_bars[-3]
         
         last_price = current_m['close']
-        if last_price < 0.001: return None
+        if last_price < 0.000001: return None
         
-        is_crypto = "-USD" in symbol
-        dec = 4 if is_crypto and last_price < 1.0 else (3 if is_crypto and last_price < 10.0 else 2)
-        
+        dec = 6 if is_crypto and last_price < 0.01 else (4 if is_crypto and last_price < 1.0 else (3 if is_crypto and last_price < 10.0 else 2))
+        curr_m_lbl = current_m.get('month', current_m['date'][:7])
+        last_m_lbl = last_m.get('month', last_m['date'][:7])
+        prev_m_lbl = prev_m.get('month', prev_m['date'][:7])
+
         if mode == "developing":
             cpr_target = calculate_cpr_and_pivots(current_m['high'], current_m['low'], current_m['close'], dec)
             cpr_base = calculate_cpr_and_pivots(last_m['high'], last_m['low'], last_m['close'], dec)
-            target_label = f"Developing Next Month ({current_m['month']} MTD)"
-            base_label = f"Current Month ({last_m['month']})"
+            target_label = f"Developing Next Month ({curr_m_lbl} MTD)"
+            base_label = f"Current Month ({last_m_lbl})"
             trigger_h = round(current_m['high'], dec)
             trigger_l = round(current_m['low'], dec)
             trigger_name_h = "MTD High (Buy)"
@@ -686,8 +1092,8 @@ def process_cpr_setup(symbol, timeframe="monthly", mode="active"):
         else:
             cpr_target = calculate_cpr_and_pivots(last_m['high'], last_m['low'], last_m['close'], dec)
             cpr_base = calculate_cpr_and_pivots(prev_m['high'], prev_m['low'], prev_m['close'], dec)
-            target_label = f"Current Month ({last_m['month']})"
-            base_label = f"Previous Month ({prev_m['month']})"
+            target_label = f"Current Month ({last_m_lbl})"
+            base_label = f"Previous Month ({prev_m_lbl})"
             trigger_h = round(last_m['high'], dec)
             trigger_l = round(last_m['low'], dec)
             trigger_name_h = "PM High (Buy)"
@@ -702,10 +1108,9 @@ def process_cpr_setup(symbol, timeframe="monthly", mode="active"):
         day_before_c = daily_candles[-3]
         
         last_price = today_c['close']
-        if last_price < 0.001: return None
+        if last_price < 0.000001: return None
         
-        is_crypto = "-USD" in symbol
-        dec = 4 if is_crypto and last_price < 1.0 else (3 if is_crypto and last_price < 10.0 else 2)
+        dec = 6 if is_crypto and last_price < 0.01 else (4 if is_crypto and last_price < 1.0 else (3 if is_crypto and last_price < 10.0 else 2))
         
         if mode == "developing":
             cpr_target = calculate_cpr_and_pivots(today_c['high'], today_c['low'], today_c['close'], dec)
@@ -791,17 +1196,17 @@ def process_cpr_setup(symbol, timeframe="monthly", mode="active"):
     else:
         quality_tag = {"text": f"{rel_icon} {relationship}", "badge": rel_badge}
 
-    clean_symbol = symbol.replace(".NS", "").replace("^", "")
-    oi_info = YAHOO_MGR.get_crypto_derivatives(symbol) if is_crypto else None
-
-    market_cap = None
-    mc_formatted = None
+    clean_symbol = symbol.replace("USDT", "").replace("USDC", "").replace("-USD", "").replace(".NS", "").replace("^", "")
+    
     if is_crypto:
-        base_sym = clean_symbol.replace("-USD", "").replace("USDT", "").replace("USD", "").upper()
-        mc_map = YAHOO_MGR.get_crypto_market_caps()
-        if base_sym in mc_map:
-            market_cap = mc_map[base_sym]
-            mc_formatted = YAHOO_MGR.format_market_cap(market_cap)
+        oi_info = BINANCE_MGR.get_crypto_derivatives(symbol)
+        vol_usd = (oi_info.get("vol_24h_usd") or 0) if oi_info else BINANCE_MGR.get_spot_volume(symbol)
+        market_cap = vol_usd
+        mc_formatted = (oi_info["vol_formatted"] + " 24h Vol") if (oi_info and oi_info.get("vol_formatted") and oi_info["vol_formatted"] != "-") else (BINANCE_MGR.format_usd(vol_usd) + " 24h Vol" if vol_usd > 0 else None)
+    else:
+        oi_info = None
+        market_cap = None
+        mc_formatted = None
 
     return {
         "symbol": symbol,
@@ -840,29 +1245,32 @@ def process_virgin_cpr_daily(symbol, max_days=10):
     Scans for Daily Virgin CPRs formed within the last max_days completed sessions
     that have NEVER been tested or touched by any subsequent candle up to LTP.
     """
-    monthly_bars, daily_candles = YAHOO_MGR.fetch_market_bars(symbol)
+    is_crypto = symbol.endswith("USDT") or symbol.endswith("USDC") or ("-USD" in symbol)
+    if is_crypto:
+        monthly_bars, daily_candles = BINANCE_MGR.fetch_market_bars(symbol)
+    else:
+        monthly_bars, daily_candles = YAHOO_MGR.fetch_market_bars(symbol)
     if len(daily_candles) < max_days + 2:
         return []
 
     n = len(daily_candles)
     current_candle = daily_candles[-1]
     ltp = current_candle['close']
-    if ltp < 0.001:
+    if ltp < 0.000001:
         return []
 
-    is_crypto = "-USD" in symbol
-    dec = 4 if is_crypto and ltp < 1.0 else (3 if is_crypto and ltp < 10.0 else 2)
-    clean_symbol = symbol.replace(".NS", "").replace("^", "")
-    oi_info = YAHOO_MGR.get_crypto_derivatives(symbol) if is_crypto else None
-
-    market_cap = None
-    mc_formatted = None
+    dec = 6 if is_crypto and ltp < 0.01 else (4 if is_crypto and ltp < 1.0 else (3 if is_crypto and ltp < 10.0 else 2))
+    clean_symbol = symbol.replace("USDT", "").replace("USDC", "").replace("-USD", "").replace(".NS", "").replace("^", "")
+    
     if is_crypto:
-        base_sym = clean_symbol.replace("-USD", "").replace("USDT", "").replace("USD", "").upper()
-        mc_map = YAHOO_MGR.get_crypto_market_caps()
-        if base_sym in mc_map:
-            market_cap = mc_map[base_sym]
-            mc_formatted = YAHOO_MGR.format_market_cap(market_cap)
+        oi_info = BINANCE_MGR.get_crypto_derivatives(symbol)
+        vol_usd = (oi_info.get("vol_24h_usd") or 0) if oi_info else BINANCE_MGR.get_spot_volume(symbol)
+        market_cap = vol_usd
+        mc_formatted = (oi_info["vol_formatted"] + " 24h Vol") if (oi_info and oi_info.get("vol_formatted") and oi_info["vol_formatted"] != "-") else (BINANCE_MGR.format_usd(vol_usd) + " 24h Vol" if vol_usd > 0 else None)
+    else:
+        oi_info = None
+        market_cap = None
+        mc_formatted = None
 
     prev_c_for_change = daily_candles[-2]
     chg = round(ltp - prev_c_for_change['close'], dec)
@@ -986,9 +1394,9 @@ DASHBOARD_HTML = """
                 <div>
                     <h1 class="text-lg font-bold tracking-tight bg-gradient-to-r from-white via-amber-200 to-orange-400 bg-clip-text text-transparent flex items-center gap-2">
                         PIVOT BOSS CPR TERMINAL
-                        <span id="header-mode-badge" class="px-2 py-0.5 rounded text-[10px] bg-rose-500/20 text-rose-300 font-mono font-medium border border-rose-500/30">VIRGIN CPR (≤10D)</span>
+                        <span id="header-mode-badge" class="px-2 py-0.5 rounded text-[10px] bg-rose-500/20 text-rose-300 font-mono font-medium border border-rose-500/30">BINANCE VIRGIN CPR (≤10D)</span>
                     </h1>
-                    <p class="text-xs text-slate-400">Institutional Breakout & Untested Liquidity Magnet Engine</p>
+                    <p class="text-xs text-slate-400">Institutional Breakout & Untested Liquidity Engine (100% Official Binance API)</p>
                 </div>
             </div>
 
@@ -1036,30 +1444,30 @@ DASHBOARD_HTML = """
 
                 <!-- Market Selector -->
                 <div class="flex bg-navy-950 p-1 rounded-xl border border-navy-700 text-xs font-medium shadow-inner">
-                    <button onclick="setMarket('india_all')" id="btn-india" class="px-3 py-1.5 rounded-lg transition-all text-white bg-indigo-600 font-semibold shadow">
+                    <button onclick="setMarket('crypto_all')" id="btn-crypto" class="px-3 py-1.5 rounded-lg transition-all text-white bg-indigo-600 font-semibold shadow">
+                        🪙 Binance Crypto
+                    </button>
+                    <button onclick="setMarket('india_all')" id="btn-india" class="px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white">
                         🇮🇳 India
                     </button>
                     <button onclick="setMarket('us_russell2000')" id="btn-us" class="px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white">
                         🇺🇸 Russell 2000
                     </button>
-                    <button onclick="setMarket('crypto_all')" id="btn-crypto" class="px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white">
-                        🪙 Crypto
-                    </button>
                 </div>
 
-                <!-- Crypto Market Cap Filter (Visible when Crypto is active) -->
-                <div id="crypto-mc-controls" class="hidden flex items-center bg-navy-950 p-1 rounded-xl border border-indigo-500/30 text-xs font-medium shadow-inner">
-                    <button onclick="setMinMC(0)" id="btn-mc-all" class="px-2.5 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white" title="All 1,200+ Coins in One Go">
-                        🌐 All (1,200+)
+                <!-- Crypto 24h Volume Filter (Visible when Crypto is active) -->
+                <div id="crypto-mc-controls" class="flex items-center bg-navy-950 p-1 rounded-xl border border-indigo-500/30 text-xs font-medium shadow-inner">
+                    <button onclick="setMinMC(0)" id="btn-mc-all" class="px-2.5 py-1.5 rounded-lg transition-all text-white bg-indigo-600 font-bold shadow" title="All 700+ Binance USDT Pairs">
+                        🌐 Binance All (700+)
                     </button>
-                    <button onclick="setMinMC(5000000)" id="btn-mc-5m" class="px-2.5 py-1.5 rounded-lg transition-all text-white bg-indigo-600 font-bold shadow" title="Coins with Market Cap >= $5M">
-                        🪙 ≥ $5M MC
+                    <button onclick="setMinMC(1000000)" id="btn-mc-5m" class="px-2.5 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white" title="High Liquidity >= $1M 24h Volume">
+                        🔥 ≥ $1M Vol
                     </button>
-                    <button onclick="setMinMC(50000000)" id="btn-mc-50m" class="px-2.5 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white" title="Mid-Cap Coins >= $50M">
-                        💎 ≥ $50M
+                    <button onclick="setMinMC(25000000)" id="btn-mc-50m" class="px-2.5 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white" title="Mid-Cap Volume >= $25M 24h Volume">
+                        💎 ≥ $25M Vol
                     </button>
-                    <button onclick="setMinMC(500000000)" id="btn-mc-500m" class="px-2.5 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white" title="Large-Cap Giants >= $500M">
-                        👑 ≥ $500M
+                    <button onclick="setMinMC(100000000)" id="btn-mc-500m" class="px-2.5 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white" title="Large-Cap Giants >= $100M 24h Volume">
+                        👑 ≥ $100M Vol
                     </button>
                 </div>
 
@@ -1406,8 +1814,8 @@ DASHBOARD_HTML = """
         let currentStrategy = 'virgin_cpr'; // 'virgin_cpr' or 'inside_value'
         let currentTimeframe = 'daily';
         let currentMode = 'developing';
-        let currentMarket = 'india_all';
-        let currentMinMC = 5000000; // $5M min Market Cap default for crypto
+        let currentMarket = 'crypto_all';
+        let currentMinMC = 0; // 0 for all Binance USDT pairs
         let currentSort = { column: 'abs_dist', ascending: true };
         let scanData = [];
         let chartInstance = null;
@@ -1825,15 +2233,15 @@ DASHBOARD_HTML = """
 
                 // Crypto market banner adjustments
                 if (currentMarket === 'crypto_all') {
-                    const mcLabel = currentMinMC >= 1000000000 ? `$${(currentMinMC/1e9).toFixed(0)}B` : (currentMinMC >= 1000000 ? `$${(currentMinMC/1e6).toFixed(0)}M` : `$${currentMinMC}`);
+                    const volLabel = currentMinMC >= 1000000 ? `$${(currentMinMC/1e6).toFixed(0)}M` : (currentMinMC > 0 ? `$${currentMinMC}` : 'All');
                     if (currentStrategy === 'virgin_cpr') {
-                        tableTitle.innerText = `🛡️ Verified Daily Virgin CPRs (Coins with MC ≥ ${mcLabel})`;
-                        bannerDesc.innerHTML = `Price has <strong>never touched these CPR pivot ranges</strong> since formation! Tracking institutional coins with <strong>Market Cap ≥ ${mcLabel}</strong>.`;
+                        tableTitle.innerText = `🛡️ Verified Binance Daily Virgin CPRs (${volLabel === 'All' ? '700+ Pairs' : `24h Vol ≥ ${volLabel}`})`;
+                        bannerDesc.innerHTML = `Price has <strong>never touched these CPR pivot ranges</strong> since formation! Tracking Binance pairs with <strong>${volLabel === 'All' ? 'All Liquid Pairs' : `24h Turnover ≥ ${volLabel}`}</strong> via official Binance API.`;
                     } else {
                         const tfName = currentTimeframe === 'daily' ? 'DAILY' : (currentTimeframe === 'monthly' ? 'MONTHLY' : 'QUARTERLY');
                         const modeName = currentMode === 'developing' ? 'DEVELOPING' : 'ACTIVE';
-                        tableTitle.innerText = `🔥 Verified ${tfName} ${modeName} Inside Value (Coins with MC ≥ ${mcLabel})`;
-                        bannerDesc.innerHTML = `Scanning volatility compression coils across coins with <strong>Market Cap ≥ ${mcLabel}</strong> alongside <strong>Live Open Interest and Squeeze Ratios</strong>.`;
+                        tableTitle.innerText = `🔥 Verified Binance ${tfName} ${modeName} Inside Value (${volLabel === 'All' ? '700+ Pairs' : `24h Vol ≥ ${volLabel}`})`;
+                        bannerDesc.innerHTML = `Scanning volatility compression coils across <strong>Binance USDT pairs</strong> with <strong>Live Futures Open Interest & Squeeze Ratios</strong>.`;
                     }
                 }
             }
@@ -1852,7 +2260,7 @@ DASHBOARD_HTML = """
                 }
             });
 
-            // Crypto Market Cap Filter Controls
+            // Crypto 24h Volume Filter Controls
             const mcControls = document.getElementById('crypto-mc-controls');
             if (currentMarket === 'crypto_all' && currentStrategy !== 'oi_radar') {
                 if (mcControls) mcControls.classList.remove('hidden');
@@ -1860,7 +2268,7 @@ DASHBOARD_HTML = """
                     const btn = document.getElementById(`btn-mc-${k}`);
                     if (btn) btn.className = 'px-2.5 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white';
                 });
-                const activeKey = currentMinMC >= 500000000 ? '500m' : (currentMinMC >= 50000000 ? '50m' : (currentMinMC >= 5000000 ? '5m' : 'all'));
+                const activeKey = currentMinMC >= 100000000 ? '500m' : (currentMinMC >= 25000000 ? '50m' : (currentMinMC >= 1000000 ? '5m' : 'all'));
                 const activeBtn = document.getElementById(`btn-mc-${activeKey}`);
                 if (activeBtn) activeBtn.className = 'px-2.5 py-1.5 rounded-lg transition-all text-white bg-indigo-600 font-bold shadow';
             } else {
@@ -1914,7 +2322,7 @@ DASHBOARD_HTML = """
                 if (isCrypto) {
                     thead.innerHTML = `
                         <tr class="bg-navy-950/90 border-b border-navy-700 text-slate-400 font-semibold tracking-wider uppercase text-[11px]">
-                            <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('market_cap')">Coin Pair & MC ↕</th>
+                            <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('market_cap')">Coin Pair & 24h Vol ↕</th>
                             <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('ltp')">Current LTP & Chg ↕</th>
                             <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('days_ago')">Virgin Date & Age ↕</th>
                             <th class="py-3.5 px-4">Untested CPR Band (BC • P • TC)</th>
@@ -1943,7 +2351,7 @@ DASHBOARD_HTML = """
                 if (isCrypto) {
                     thead.innerHTML = `
                         <tr class="bg-navy-950/90 border-b border-navy-700 text-slate-400 font-semibold tracking-wider uppercase text-[11px]">
-                            <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('market_cap')">Coin Pair & MC ↕</th>
+                            <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('market_cap')">Coin Pair & 24h Vol ↕</th>
                             <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('ltp')">Current LTP & Chg ↕</th>
                             <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('relationship')">CPR Relationship ↕</th>
                             <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('cpr_width_pct')">Target CPR Band & Width ↕</th>
@@ -2102,9 +2510,9 @@ DASHBOARD_HTML = """
                                 <td class="py-3.5 px-4">
                                     <div class="font-bold text-white text-sm tracking-tight flex items-center gap-1.5">
                                         <span>${item.clean_symbol}</span>
-                                        ${item.mc_formatted ? `<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">${item.mc_formatted} MC</span>` : ''}
+                                        ${item.mc_formatted ? `<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">${item.mc_formatted}</span>` : ''}
                                     </div>
-                                    <div class="text-[10px] text-slate-500 font-sans">${item.symbol}</div>
+                                    <div class="text-[10px] text-slate-500 font-sans">${item.symbol} • Binance</div>
                                 </td>
                                 <td class="py-3.5 px-4">
                                     <div class="font-bold text-slate-100">${item.ltp.toLocaleString()}</div>
@@ -2206,9 +2614,9 @@ DASHBOARD_HTML = """
                                 <td class="py-3.5 px-4">
                                     <div class="font-bold text-white text-sm tracking-tight flex items-center gap-1.5">
                                         <span>${item.clean_symbol}</span>
-                                        ${item.mc_formatted ? `<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">${item.mc_formatted} MC</span>` : ''}
+                                        ${item.mc_formatted ? `<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">${item.mc_formatted}</span>` : ''}
                                     </div>
-                                    <div class="text-[10px] text-slate-500 font-sans">${item.symbol}</div>
+                                    <div class="text-[10px] text-slate-500 font-sans">${item.symbol} • Binance</div>
                                 </td>
                                 <td class="py-3.5 px-4">
                                     <div class="font-bold text-slate-100">${item.ltp.toLocaleString()}</div>
@@ -2423,18 +2831,18 @@ def index():
 @app.route("/api/scan")
 def api_scan():
     strategy = request.args.get("strategy", "virgin_cpr")
-    market = request.args.get("market", "india_all")
+    market = request.args.get("market", "crypto_all")
     timeframe = request.args.get("timeframe", "daily")
     mode = request.args.get("mode", "developing")
-    min_mc = float(request.args.get("min_mc", 5_000_000))
+    min_mc = float(request.args.get("min_mc", 0))
     if market == "crypto_all":
-        symbols = YAHOO_MGR.get_dynamic_crypto_symbols(min_mc=min_mc, max_coins=1500)
+        symbols = BINANCE_MGR.get_binance_symbols(min_quote_vol=min_mc, max_coins=800)
     else:
         watchlist_info = WATCHLISTS.get(market, WATCHLISTS["india_all"])
         symbols = watchlist_info["symbols"]
     
     results = []
-    workers = 40 if market == "crypto_all" else 10
+    workers = 45 if market == "crypto_all" else 10
     with ThreadPoolExecutor(max_workers=workers) as executor:
         if strategy == "virgin_cpr":
             futures = [executor.submit(process_virgin_cpr_daily, sym, 10) for sym in symbols]
@@ -2462,10 +2870,10 @@ def api_scan():
 
 @app.route("/api/crypto/oi")
 def api_crypto_oi():
-    search = request.args.get("search", "PEPE").strip()
+    search = request.args.get("search", "BTC").strip()
     watchlist_raw = request.args.get("watchlist", "")
     watchlist_list = [w.strip() for w in watchlist_raw.split(",") if w.strip()] if watchlist_raw else None
-    data = YAHOO_MGR.get_crypto_oi_radar(search, watchlist_list)
+    data = BINANCE_MGR.get_crypto_oi_radar(search, watchlist_list)
     return jsonify(data)
 
 if __name__ == "__main__":
