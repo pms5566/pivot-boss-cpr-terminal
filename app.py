@@ -10,6 +10,7 @@ Markets:
 - 🪙 Crypto (Top 110+ Coins)
 """
 
+import os
 import time
 import json
 import datetime
@@ -2897,14 +2898,14 @@ def api_scan():
         if market == "crypto_all":
             # On serverless environments, limit max_coins to prevent function execution timeout
             is_serverless = os.environ.get("VERCEL") == "1" or os.environ.get("AWS_LAMBDA_FUNCTION_NAME") is not None
-            max_limit = 200 if is_serverless else 800
+            max_limit = 150 if is_serverless else 800
             symbols = BINANCE_MGR.get_binance_symbols(min_quote_vol=min_mc, max_coins=max_limit)
         else:
             watchlist_info = WATCHLISTS.get(market, WATCHLISTS["india_all"])
             symbols = watchlist_info["symbols"]
         
         results = []
-        workers = 35 if market == "crypto_all" else 10
+        workers = 30 if market == "crypto_all" else 10
         with ThreadPoolExecutor(max_workers=workers) as executor:
             if strategy == "virgin_cpr":
                 futures = [executor.submit(process_virgin_cpr_daily, sym, 10) for sym in symbols]
