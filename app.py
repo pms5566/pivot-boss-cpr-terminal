@@ -1042,10 +1042,11 @@ def process_cpr_setup(symbol, timeframe="monthly", mode="active"):
         monthly_bars, daily_candles = YAHOO_MGR.fetch_market_bars(symbol)
     
     if timeframe == "quarterly":
-        if not daily_candles: return None
+        bars_source = monthly_bars if len(monthly_bars) >= 6 else daily_candles
+        if not bars_source: return None
         quarterly_dict = {}
-        for candle in daily_candles:
-            date_str = candle['date']
+        for bar in bars_source:
+            date_str = bar['date']
             yr = date_str[:4]
             mo = int(date_str[5:7])
             q_num = (mo - 1) // 3 + 1
@@ -1053,18 +1054,18 @@ def process_cpr_setup(symbol, timeframe="monthly", mode="active"):
             if q_key not in quarterly_dict:
                 quarterly_dict[q_key] = {
                     'quarter': q_key,
-                    'time': candle['time'],
-                    'open': candle['open'],
-                    'high': candle['high'],
-                    'low': candle['low'],
-                    'close': candle['close'],
-                    'volume': candle['volume']
+                    'time': bar.get('time', 0),
+                    'open': bar['open'],
+                    'high': bar['high'],
+                    'low': bar['low'],
+                    'close': bar['close'],
+                    'volume': bar.get('volume', 0)
                 }
             else:
-                quarterly_dict[q_key]['high'] = max(quarterly_dict[q_key]['high'], candle['high'])
-                quarterly_dict[q_key]['low'] = min(quarterly_dict[q_key]['low'], candle['low'])
-                quarterly_dict[q_key]['close'] = candle['close']
-                quarterly_dict[q_key]['volume'] += candle['volume']
+                quarterly_dict[q_key]['high'] = max(quarterly_dict[q_key]['high'], bar['high'])
+                quarterly_dict[q_key]['low'] = min(quarterly_dict[q_key]['low'], bar['low'])
+                quarterly_dict[q_key]['close'] = bar['close']
+                quarterly_dict[q_key]['volume'] += bar.get('volume', 0)
         sorted_quarters = [quarterly_dict[k] for k in sorted(quarterly_dict.keys())]
         if len(sorted_quarters) < 3: return None
         current_q = sorted_quarters[-1]
@@ -1074,7 +1075,7 @@ def process_cpr_setup(symbol, timeframe="monthly", mode="active"):
         last_price = current_q['close']
         if last_price < 0.000001: return None
 
-        dec = 6 if is_crypto and last_price < 0.01 else (4 if is_crypto and last_price < 1.0 else (3 if is_crypto and last_price < 10.0 else 2))
+        dec = 8 if is_crypto and last_price < 0.001 else (6 if is_crypto and last_price < 0.01 else (4 if is_crypto and last_price < 1.0 else (3 if is_crypto and last_price < 10.0 else 2)))
 
         if mode == "developing":
             cpr_target = calculate_cpr_and_pivots(current_q['high'], current_q['low'], current_q['close'], dec)
@@ -1106,7 +1107,7 @@ def process_cpr_setup(symbol, timeframe="monthly", mode="active"):
         last_price = current_m['close']
         if last_price < 0.000001: return None
         
-        dec = 6 if is_crypto and last_price < 0.01 else (4 if is_crypto and last_price < 1.0 else (3 if is_crypto and last_price < 10.0 else 2))
+        dec = 8 if is_crypto and last_price < 0.001 else (6 if is_crypto and last_price < 0.01 else (4 if is_crypto and last_price < 1.0 else (3 if is_crypto and last_price < 10.0 else 2)))
         curr_m_lbl = current_m.get('month', current_m['date'][:7])
         last_m_lbl = last_m.get('month', last_m['date'][:7])
         prev_m_lbl = prev_m.get('month', prev_m['date'][:7])
@@ -1141,7 +1142,7 @@ def process_cpr_setup(symbol, timeframe="monthly", mode="active"):
         last_price = today_c['close']
         if last_price < 0.000001: return None
         
-        dec = 6 if is_crypto and last_price < 0.01 else (4 if is_crypto and last_price < 1.0 else (3 if is_crypto and last_price < 10.0 else 2))
+        dec = 8 if is_crypto and last_price < 0.001 else (6 if is_crypto and last_price < 0.01 else (4 if is_crypto and last_price < 1.0 else (3 if is_crypto and last_price < 10.0 else 2)))
         
         if mode == "developing":
             cpr_target = calculate_cpr_and_pivots(today_c['high'], today_c['low'], today_c['close'], dec)
