@@ -248,6 +248,7 @@ class BinanceAPIManager:
                 dt = datetime.datetime.fromtimestamp(b[0] / 1000.0, tz=datetime.timezone.utc).strftime("%Y-%m-%d")
                 monthly_bars.append({
                     "date": dt,
+                    "month": dt[:7],
                     "time": int(b[0] / 1000),
                     "open": float(b[1]),
                     "high": float(b[2]),
@@ -669,6 +670,7 @@ class CoinbaseAPIManager:
             mo_key = c['date'][:7]
             if mo_key not in monthly_dict:
                 monthly_dict[mo_key] = {
+                    'month': mo_key,
                     'date': c['date'],
                     'time': c['time'],
                     'open': c['open'],
@@ -1100,6 +1102,7 @@ class YahooSessionManager:
                 if m_key not in monthly_dict:
                     monthly_dict[m_key] = {
                         'month': m_key,
+                        'date': candle.get('date', f"{m_key}-01"),
                         'time': candle['time'],
                         'open': candle['open'],
                         'high': candle['high'],
@@ -1167,9 +1170,10 @@ class YahooSessionManager:
                             daily_candles.append(candle)
                             
                             m_key = datetime.datetime.fromtimestamp(t).strftime('%Y-%m')
+                            c_date = datetime.datetime.fromtimestamp(t).strftime('%Y-%m-%d')
                             if m_key not in monthly_dict:
                                 monthly_dict[m_key] = {
-                                    'month': m_key, 'time': t, 'open': float(o),
+                                    'month': m_key, 'date': c_date, 'time': t, 'open': float(o),
                                     'high': float(h), 'low': float(l), 'close': float(c),
                                     'volume': int(v or 0)
                                 }
@@ -1247,7 +1251,8 @@ def process_cpr_setup(symbol, timeframe="monthly", mode="active"):
         if not bars_source: return None
         quarterly_dict = {}
         for bar in bars_source:
-            date_str = bar['date']
+            date_str = bar.get('date') or bar.get('month', '')
+            if not date_str: continue
             yr = date_str[:4]
             mo = int(date_str[5:7])
             q_num = (mo - 1) // 3 + 1
@@ -1309,9 +1314,9 @@ def process_cpr_setup(symbol, timeframe="monthly", mode="active"):
         if last_price < 0.000001: return None
         
         dec = 8 if is_crypto and last_price < 0.001 else (6 if is_crypto and last_price < 0.01 else (4 if is_crypto and last_price < 1.0 else (3 if is_crypto and last_price < 10.0 else 2)))
-        curr_m_lbl = current_m.get('month', current_m['date'][:7])
-        last_m_lbl = last_m.get('month', last_m['date'][:7])
-        prev_m_lbl = prev_m.get('month', prev_m['date'][:7])
+        curr_m_lbl = current_m.get('month') or current_m.get('date', '')[:7]
+        last_m_lbl = last_m.get('month') or last_m.get('date', '')[:7]
+        prev_m_lbl = prev_m.get('month') or prev_m.get('date', '')[:7]
 
         if mode == "developing":
             cpr_target = calculate_cpr_and_pivots(current_m['high'], current_m['low'], current_m['close'], dec)
@@ -1348,8 +1353,8 @@ def process_cpr_setup(symbol, timeframe="monthly", mode="active"):
         if mode == "developing":
             cpr_target = calculate_cpr_and_pivots(today_c['high'], today_c['low'], today_c['close'], dec)
             cpr_base = calculate_cpr_and_pivots(yesterday_c['high'], yesterday_c['low'], yesterday_c['close'], dec)
-            target_label = f"Developing Tomorrow ({today_c['date']})"
-            base_label = f"Today ({yesterday_c['date']})"
+            target_label = f"Developing Tomorrow ({today_c.get('date', '')})"
+            base_label = f"Today ({yesterday_c.get('date', '')})"
             trigger_h = round(today_c['high'], dec)
             trigger_l = round(today_c['low'], dec)
             trigger_name_h = "Today High (Buy)"
@@ -1357,8 +1362,8 @@ def process_cpr_setup(symbol, timeframe="monthly", mode="active"):
         else:
             cpr_target = calculate_cpr_and_pivots(yesterday_c['high'], yesterday_c['low'], yesterday_c['close'], dec)
             cpr_base = calculate_cpr_and_pivots(day_before_c['high'], day_before_c['low'], day_before_c['close'], dec)
-            target_label = f"Today ({yesterday_c['date']})"
-            base_label = f"Yesterday ({day_before_c['date']})"
+            target_label = f"Today ({yesterday_c.get('date', '')})"
+            base_label = f"Yesterday ({day_before_c.get('date', '')})"
             trigger_h = round(yesterday_c['high'], dec)
             trigger_l = round(yesterday_c['low'], dec)
             trigger_name_h = "PD High (Buy)"
