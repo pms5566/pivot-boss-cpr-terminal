@@ -1458,7 +1458,7 @@ def process_cpr_setup(symbol, timeframe="monthly", mode="active"):
         "relationship": relationship,
         "rel_badge": rel_badge,
         "rel_icon": rel_icon,
-        "is_inside_value": (is_strict or is_near_coil),
+        "is_inside_value": is_strict,
         "is_strict": is_strict,
         "cpr_width_pct": width_target,
         "timeframe": timeframe,
@@ -1770,8 +1770,8 @@ DASHBOARD_HTML = """
                 <div class="flex items-center gap-2">
                     <!-- Quick Filter Pills -->
                     <div id="quick-filters" class="flex flex-wrap items-center gap-1 bg-navy-950 p-1 rounded-xl border border-navy-700 text-[11px]">
-                        <button onclick="setQuickFilter('all')" id="qf-all" class="px-2.5 py-1 rounded-lg bg-amber-400 text-black font-bold shadow">All Coins</button>
-                        <button onclick="setQuickFilter('inside')" id="qf-inside" class="px-2.5 py-1 rounded-lg text-slate-400 hover:text-white">⚡ Inside Value</button>
+                        <button onclick="setQuickFilter('inside')" id="qf-inside" class="px-2.5 py-1 rounded-lg bg-amber-400 text-black font-bold shadow">⚡ Inside Value</button>
+                        <button onclick="setQuickFilter('all')" id="qf-all" class="px-2.5 py-1 rounded-lg text-slate-400 hover:text-white">All 2-Day Trends</button>
                         <button onclick="setQuickFilter('higher')" id="qf-higher" class="px-2.5 py-1 rounded-lg text-slate-400 hover:text-white">🚀 Higher Value</button>
                         <button onclick="setQuickFilter('lower')" id="qf-lower" class="px-2.5 py-1 rounded-lg text-slate-400 hover:text-white">🐻 Lower Value</button>
                         <button onclick="setQuickFilter('megacoil')" id="qf-megacoil" class="px-2.5 py-1 rounded-lg text-slate-400 hover:text-white">💥 MegaCoil (&gt;70%)</button>
@@ -2078,7 +2078,20 @@ DASHBOARD_HTML = """
         let currentSort = { column: 'abs_dist', ascending: true };
         let scanData = [];
         let chartInstance = null;
-        let currentQuickFilter = 'all'; // 'all', 'squeeze', 'magnet', 'megacoil'
+        let currentQuickFilter = 'inside'; // default to 'inside' on Inside Value strategy
+
+        function syncQuickFilterUI() {
+            ['all', 'inside', 'higher', 'lower', 'squeeze', 'magnet', 'megacoil'].forEach(id => {
+                const btn = document.getElementById(`qf-${id}`);
+                if (btn) {
+                    if (id === currentQuickFilter) {
+                        btn.className = 'px-2.5 py-1 rounded-lg bg-amber-400 text-black font-bold shadow';
+                    } else {
+                        btn.className = 'px-2.5 py-1 rounded-lg text-slate-400 hover:text-white';
+                    }
+                }
+            });
+        }
 
         function setMinMC(mc) {
             currentMinMC = mc;
@@ -2096,16 +2109,8 @@ DASHBOARD_HTML = """
 
         function setQuickFilter(qf) {
             currentQuickFilter = qf;
-            ['all', 'inside', 'higher', 'lower', 'squeeze', 'magnet', 'megacoil'].forEach(id => {
-                const btn = document.getElementById(`qf-${id}`);
-                if (btn) {
-                    if (id === qf) {
-                        btn.className = 'px-2.5 py-1 rounded-lg bg-amber-400 text-black font-bold shadow';
-                    } else {
-                        btn.className = 'px-2.5 py-1 rounded-lg text-slate-400 hover:text-white';
-                    }
-                }
-            });
+            syncQuickFilterUI();
+            updateUIState();
             renderTable();
         }
 
@@ -2502,8 +2507,22 @@ DASHBOARD_HTML = """
                     } else {
                         const tfName = currentTimeframe === 'daily' ? 'DAILY' : (currentTimeframe === 'monthly' ? 'MONTHLY' : 'QUARTERLY');
                         const modeName = currentMode === 'developing' ? 'DEVELOPING' : 'ACTIVE';
-                        tableTitle.innerText = `🔥 Verified ${exchangeName} ${tfName} ${modeName} Inside Value (${volLabel === 'All' ? totalLabel : `24h Vol ≥ ${volLabel}`})`;
-                        bannerDesc.innerHTML = `Scanning volatility compression coils across <strong>${exchangeName} Pairs</strong> with <strong>Live Pivot Boss CPR Calculations</strong>.`;
+                        if (currentQuickFilter === 'inside') {
+                            tableTitle.innerText = `⚡ Verified Strict Inside Value CPRs (${exchangeName} • ${tfName} ${modeName})`;
+                            bannerTitle.innerText = `${tfName} ${modeName} Strict Inside Value CPR Setup:`;
+                            bannerDesc.innerHTML = `These assets are in <strong>verified volatility compression</strong> (Pivot Range completely inside prior Pivot Range). Breakouts above Upper Boundary/Today High or breakdowns below Lower Boundary/Today Low trigger violent expansions.`;
+                        } else if (currentQuickFilter === 'all') {
+                            tableTitle.innerText = `📊 ${exchangeName} ${tfName} ${modeName} - All 2-Day Relationships`;
+                            bannerTitle.innerText = `Two-Day Pivot Range Master Framework (${exchangeName}):`;
+                            bannerDesc.innerHTML = `Tracking all 7 Frank Ochoa Two-Day Relationships (Inside Value, Outside Value, Higher Value, Lower Value, Overlap Higher, Overlap Lower).`;
+                        } else if (currentQuickFilter === 'higher') {
+                            tableTitle.innerText = `🚀 ${exchangeName} Higher Value Bullish Continuations`;
+                        } else if (currentQuickFilter === 'lower') {
+                            tableTitle.innerText = `🐻 ${exchangeName} Lower Value Bearish Continuations`;
+                        } else {
+                            tableTitle.innerText = `🔥 Verified ${exchangeName} ${tfName} ${modeName} Inside Value (${volLabel === 'All' ? totalLabel : `24h Vol ≥ ${volLabel}`})`;
+                            bannerDesc.innerHTML = `Scanning volatility compression coils across <strong>${exchangeName} Pairs</strong> with <strong>Live Pivot Boss CPR Calculations</strong>.`;
+                        }
                     }
                 }
             }
@@ -2545,10 +2564,19 @@ DASHBOARD_HTML = """
             currentStrategy = strat;
             if (strat === 'virgin_cpr') {
                 currentSort = { column: 'abs_dist', ascending: true };
+                currentQuickFilter = 'all';
             } else if (strat === 'inside_value') {
                 currentSort = { column: 'compression_pct', ascending: false };
+                currentQuickFilter = 'inside';
             }
+            syncQuickFilterUI();
             updateUIState();
+            if (strat === 'oi_radar') {
+                loadOIRadar();
+            } else {
+                runScan();
+            }
+        }
             if (strat === 'oi_radar') {
                 loadOIRadar();
             } else {
@@ -2690,7 +2718,7 @@ DASHBOARD_HTML = """
                 if (currentQuickFilter === 'all') {
                     // Show all coins
                 } else if (currentQuickFilter === 'inside') {
-                    if (!item.is_inside_value) return false;
+                    if (!item.is_strict && item.relationship !== 'Inside Value') return false;
                 } else if (currentQuickFilter === 'higher') {
                     if (item.relationship !== 'Higher Value') return false;
                 } else if (currentQuickFilter === 'lower') {
@@ -2746,12 +2774,14 @@ DASHBOARD_HTML = """
             const exchangeBadge = currentMarket === 'crypto_coinbase' ? 'Coinbase' : 'Binance';
             const tbody = document.getElementById('table-body');
             if (filtered.length === 0) {
+                const emptyMsg = currentQuickFilter === 'inside' 
+                    ? `No Strict Inside Value CPRs found for this timeframe & volume filter right now.<br><span class="text-xs text-amber-400 mt-1 inline-block">💡 Tip: Try clicking <strong>'All 2-Day Trends'</strong> to view Higher/Lower Value directional moves, or switch Volume to <strong>'All Pairs'</strong>.</span>`
+                    : `No matching setups found right now.<br><span class="text-xs text-slate-500 mt-1 inline-block">Try switching filter pill, market or strategy.</span>`;
                 tbody.innerHTML = `
                     <tr>
                         <td colspan="${isCrypto ? 9 : 8}" class="text-center py-16 text-slate-400 font-sans">
                             <div class="text-3xl mb-2">🔍</div>
-                            <p class="text-sm font-semibold text-slate-300">No matching setups found right now.</p>
-                            <p class="text-xs text-slate-500 mt-1">Try switching filter pill, market or strategy.</p>
+                            <p class="text-sm font-semibold text-slate-300">${emptyMsg}</p>
                         </td>
                     </tr>
                 `;
@@ -2897,8 +2927,9 @@ DASHBOARD_HTML = """
                                     <div class="text-[10px] font-sans mt-0.5 ${item.compression_pct > 0 ? 'text-amber-400' : 'text-slate-400'}">${item.compression_pct > 0 ? `-${item.compression_pct}% Compressed` : `+${Math.abs(item.compression_pct)}% Wider`}</div>
                                 </td>
                                 <td class="py-3.5 px-4 text-[11px]">
-                                    <div class="text-slate-200 font-semibold"><span class="text-blue-400">${item.curr_cpr.cpr_bot}</span> • <span class="text-purple-400 font-bold">${item.curr_cpr.p}</span> • <span class="text-blue-400">${item.curr_cpr.cpr_top}</span></div>
-                                    <div class="text-[10px] text-cyan-400 font-sans mt-0.5 font-medium">CPR Width: ${(item.cpr_width_pct !== undefined ? item.cpr_width_pct : item.curr_cpr.cpr_width_pct)}%</div>
+                                    <div class="text-slate-200 font-semibold"><span class="text-blue-400 font-mono">${item.curr_cpr.cpr_bot}</span> • <span class="text-purple-400 font-bold font-mono">${item.curr_cpr.p}</span> • <span class="text-blue-400 font-mono">${item.curr_cpr.cpr_top}</span></div>
+                                    <div class="text-[10px] text-slate-400 font-sans mt-0.5">Base CPR: <span class="text-slate-300 font-mono">${item.prev_cpr.cpr_bot} • ${item.prev_cpr.p} • ${item.prev_cpr.cpr_top}</span></div>
+                                    <div class="text-[10px] text-cyan-400 font-sans mt-0.5 font-medium">Width: ${(item.cpr_width_pct !== undefined ? item.cpr_width_pct : item.curr_cpr.cpr_width_pct)}% (${item.compression_pct > 0 ? `-${item.compression_pct}% compressed` : `+${Math.abs(item.compression_pct)}% wider`})</div>
                                 </td>
                                 <td class="py-3.5 px-4 text-[11px]">
                                     <div><span class="text-slate-400 font-sans">${item.trigger_name_h}:</span> <span class="text-emerald-400 font-bold">${item.pm_high}</span></div>
@@ -2991,8 +3022,13 @@ DASHBOARD_HTML = """
                 badge.className = `px-2.5 py-1 rounded-md text-xs font-semibold border ${item.role_badge}`;
                 document.getElementById('modal-info').innerText = `${item.role} (${item.dist_pct}%)`;
             } else {
-                badge.innerText = `🔥 Inside Value: -${item.compression_pct}% Compressed`;
-                badge.className = `px-2.5 py-1 rounded-md text-xs font-semibold border ${item.quality_tag.badge}`;
+                if (item.is_strict || item.relationship === 'Inside Value') {
+                    badge.innerText = `⚡ Inside Value: -${item.compression_pct}% Compressed`;
+                    badge.className = `px-2.5 py-1 rounded-md text-xs font-semibold border bg-purple-500/20 text-purple-300 border-purple-500/40`;
+                } else {
+                    badge.innerText = `${item.rel_icon || '📊'} ${item.relationship}: ${item.compression_pct > 0 ? `-${item.compression_pct}% Compressed` : `+${Math.abs(item.compression_pct)}% Wider`}`;
+                    badge.className = `px-2.5 py-1 rounded-md text-xs font-semibold border ${item.rel_badge || 'border-slate-500'}`;
+                }
                 document.getElementById('modal-info').innerText = `Triggers: ${item.pm_high} / ${item.pm_low}`;
             }
 
@@ -3047,6 +3083,24 @@ DASHBOARD_HTML = """
             candleSeries.setData(candleData);
 
             // CPR Price Lines
+            if (item.prev_cpr) {
+                candleSeries.createPriceLine({
+                    price: item.prev_cpr.cpr_top,
+                    color: '#f59e0b',
+                    lineWidth: 1,
+                    lineStyle: LightweightCharts.LineStyle.Dashed,
+                    axisLabelVisible: true,
+                    title: 'Base TC'
+                });
+                candleSeries.createPriceLine({
+                    price: item.prev_cpr.cpr_bot,
+                    color: '#f59e0b',
+                    lineWidth: 1,
+                    lineStyle: LightweightCharts.LineStyle.Dashed,
+                    axisLabelVisible: true,
+                    title: 'Base BC'
+                });
+            }
             candleSeries.createPriceLine({
                 price: item.curr_cpr.cpr_top,
                 color: '#38bdf8',
@@ -3084,6 +3138,8 @@ DASHBOARD_HTML = """
         }
 
         window.onload = () => {
+            currentQuickFilter = currentStrategy === 'inside_value' ? 'inside' : 'all';
+            syncQuickFilterUI();
             updateUIState();
             runScan();
         };
@@ -3180,7 +3236,8 @@ def api_scan():
                     res = f.result()
                     if res:
                         results.append(res)
-                results.sort(key=lambda x: x['compression_pct'], reverse=True)
+                # Prioritize strict Inside Value setups first, then Near Coils, then others; sorted by compression %
+                results.sort(key=lambda x: (1 if x.get('is_strict') else (0.5 if x.get('relationship') == 'Near Coil (95%+)' else 0), x.get('compression_pct', 0)), reverse=True)
         
         return jsonify({
             "strategy": strategy,
