@@ -2088,12 +2088,21 @@ DASHBOARD_HTML = """
         function updateFilterCounts() {
             if (currentStrategy === 'inside_value') {
                 const strictCount = scanData.filter(i => i.is_strict || i.relationship === 'Inside Value').length;
+                const nearCount = scanData.filter(i => i.relationship === 'Near Coil (95%+)').length;
                 const higherCount = scanData.filter(i => i.relationship === 'Higher Value').length;
                 const lowerCount = scanData.filter(i => i.relationship === 'Lower Value').length;
                 const megaCount = scanData.filter(i => (i.compression_pct || 0) >= 70).length;
                 
                 const qfInside = document.getElementById('qf-inside');
-                if (qfInside) qfInside.innerHTML = `⚡ Inside Value (${strictCount})`;
+                if (qfInside) {
+                    if (strictCount > 0) {
+                        qfInside.innerHTML = `⚡ Inside Value (${strictCount})`;
+                    } else if (nearCount > 0) {
+                        qfInside.innerHTML = `🌀 Near Coil (${nearCount})`;
+                    } else {
+                        qfInside.innerHTML = `⚡ Inside Value (0)`;
+                    }
+                }
                 const qfAll = document.getElementById('qf-all');
                 if (qfAll) qfAll.innerHTML = `All 2-Day Trends (${scanData.length})`;
                 const qfHigher = document.getElementById('qf-higher');
@@ -2533,9 +2542,16 @@ DASHBOARD_HTML = """
                         const tfName = currentTimeframe === 'daily' ? 'DAILY' : (currentTimeframe === 'monthly' ? 'MONTHLY' : 'QUARTERLY');
                         const modeName = currentMode === 'developing' ? 'DEVELOPING' : 'ACTIVE';
                         if (currentQuickFilter === 'inside') {
-                            tableTitle.innerText = `⚡ Verified Strict Inside Value CPRs (${exchangeName} • ${tfName} ${modeName})`;
-                            bannerTitle.innerText = `${tfName} ${modeName} Strict Inside Value CPR Setup:`;
-                            bannerDesc.innerHTML = `These assets are in <strong>verified volatility compression</strong> (Pivot Range completely inside prior Pivot Range). Breakouts above Upper Boundary/Today High or breakdowns below Lower Boundary/Today Low trigger violent expansions.`;
+                            const hasStrict = scanData.some(i => i.is_strict || i.relationship === 'Inside Value');
+                            if (hasStrict) {
+                                tableTitle.innerText = `⚡ Verified Strict Inside Value CPRs (${exchangeName} • ${tfName} ${modeName})`;
+                                bannerTitle.innerText = `${tfName} ${modeName} Strict Inside Value CPR Setup:`;
+                                bannerDesc.innerHTML = `These assets are in <strong>verified volatility compression</strong> (Pivot Range completely inside prior Pivot Range). Breakouts above Upper Boundary/Today High or breakdowns below Lower Boundary/Today Low trigger violent expansions.`;
+                            } else {
+                                tableTitle.innerText = `🌀 95%+ Near-Coil CPRs (${exchangeName} • ${tfName} ${modeName})`;
+                                bannerTitle.innerText = `${tfName} ${modeName} Near-Coil Setups (0 Strict Inside Today):`;
+                                bannerDesc.innerHTML = `Due to yesterday's trend day, 0 coins formed 100% strict inside value. Showing <strong>closest 95%+ Near-Coil candidates</strong> coiling within 0.3% of prior CPR.`;
+                            }
                         } else if (currentQuickFilter === 'all') {
                             tableTitle.innerText = `📊 ${exchangeName} ${tfName} ${modeName} - All 2-Day Relationships`;
                             bannerTitle.innerText = `Two-Day Pivot Range Master Framework (${exchangeName}):`;
@@ -2738,7 +2754,13 @@ DASHBOARD_HTML = """
                 if (currentQuickFilter === 'all') {
                     // Show all coins
                 } else if (currentQuickFilter === 'inside') {
-                    if (!item.is_strict && item.relationship !== 'Inside Value') return false;
+                    const hasStrict = scanData.some(i => i.is_strict || i.relationship === 'Inside Value');
+                    if (hasStrict) {
+                        if (!item.is_strict && item.relationship !== 'Inside Value') return false;
+                    } else {
+                        // Fallback: If 0 strict inside value exist, display Near Coils (95%+ Coils)
+                        if (item.relationship !== 'Near Coil (95%+)') return false;
+                    }
                 } else if (currentQuickFilter === 'higher') {
                     if (item.relationship !== 'Higher Value') return false;
                 } else if (currentQuickFilter === 'lower') {
@@ -3240,18 +3262,18 @@ def api_scan():
         if market == "crypto_all":
             # On serverless environments, limit max_coins to prevent function execution timeout
             is_serverless = os.environ.get("VERCEL") == "1" or os.environ.get("AWS_LAMBDA_FUNCTION_NAME") is not None
-            max_limit = 250 if is_serverless else 800
+            max_limit = 650 if is_serverless else 800
             symbols = BINANCE_MGR.get_binance_symbols(min_quote_vol=min_mc, max_coins=max_limit)
         elif market == "crypto_coinbase":
             is_serverless = os.environ.get("VERCEL") == "1" or os.environ.get("AWS_LAMBDA_FUNCTION_NAME") is not None
-            max_limit = 150 if is_serverless else 450
+            max_limit = 350 if is_serverless else 450
             symbols = COINBASE_MGR.get_coinbase_symbols(min_quote_vol=min_mc, max_coins=max_limit)
         else:
             watchlist_info = WATCHLISTS.get(market, WATCHLISTS["india_all"])
             symbols = watchlist_info["symbols"]
         
         results = []
-        workers = 30 if (market in ["crypto_all", "crypto_coinbase"]) else 10
+        workers = 35 if (market in ["crypto_all", "crypto_coinbase"]) else 10
         with ThreadPoolExecutor(max_workers=workers) as executor:
             if strategy == "virgin_cpr":
                 futures = [executor.submit(process_virgin_cpr_daily, sym, 10) for sym in symbols]
