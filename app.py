@@ -2577,12 +2577,6 @@ DASHBOARD_HTML = """
                 runScan();
             }
         }
-            if (strat === 'oi_radar') {
-                loadOIRadar();
-            } else {
-                runScan();
-            }
-        }
 
         function setTimeframe(tf) {
             currentTimeframe = tf;
