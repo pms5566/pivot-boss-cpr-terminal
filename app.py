@@ -2085,6 +2085,26 @@ DASHBOARD_HTML = """
         let chartInstance = null;
         let currentQuickFilter = 'inside'; // default to 'inside' on Inside Value strategy
 
+        function updateFilterCounts() {
+            if (currentStrategy === 'inside_value') {
+                const strictCount = scanData.filter(i => i.is_strict || i.relationship === 'Inside Value').length;
+                const higherCount = scanData.filter(i => i.relationship === 'Higher Value').length;
+                const lowerCount = scanData.filter(i => i.relationship === 'Lower Value').length;
+                const megaCount = scanData.filter(i => (i.compression_pct || 0) >= 70).length;
+                
+                const qfInside = document.getElementById('qf-inside');
+                if (qfInside) qfInside.innerHTML = `⚡ Inside Value (${strictCount})`;
+                const qfAll = document.getElementById('qf-all');
+                if (qfAll) qfAll.innerHTML = `All 2-Day Trends (${scanData.length})`;
+                const qfHigher = document.getElementById('qf-higher');
+                if (qfHigher) qfHigher.innerHTML = `🚀 Higher Value (${higherCount})`;
+                const qfLower = document.getElementById('qf-lower');
+                if (qfLower) qfLower.innerHTML = `🐻 Lower Value (${lowerCount})`;
+                const qfMega = document.getElementById('qf-megacoil');
+                if (qfMega) qfMega.innerHTML = `💥 MegaCoil (${megaCount})`;
+            }
+        }
+
         function syncQuickFilterUI() {
             ['all', 'inside', 'higher', 'lower', 'squeeze', 'magnet', 'megacoil'].forEach(id => {
                 const btn = document.getElementById(`qf-${id}`);
@@ -2684,6 +2704,7 @@ DASHBOARD_HTML = """
                 const data = await response.json();
                 scanData = data.results || [];
                 document.getElementById('coils-total').innerText = scanData.length;
+                updateFilterCounts();
                 renderTable();
             } catch (err) {
                 tbody.innerHTML = `
@@ -2773,8 +2794,18 @@ DASHBOARD_HTML = """
             const exchangeBadge = currentMarket === 'crypto_coinbase' ? 'Coinbase' : 'Binance';
             const tbody = document.getElementById('table-body');
             if (filtered.length === 0) {
+                const lowerCount = scanData.filter(i => i.relationship === 'Lower Value').length;
+                const higherCount = scanData.filter(i => i.relationship === 'Higher Value').length;
                 const emptyMsg = currentQuickFilter === 'inside' 
-                    ? `No Strict Inside Value CPRs found for this timeframe & volume filter right now.<br><span class="text-xs text-amber-400 mt-1 inline-block">💡 Tip: Try clicking <strong>'All 2-Day Trends'</strong> to view Higher/Lower Value directional moves, or switch Volume to <strong>'All Pairs'</strong>.</span>`
+                    ? `0 Strict Inside Value CPRs found for this selection.<br>
+                       <span class="text-xs text-amber-300 mt-2 block font-normal">
+                         Market Context: The crypto market had a coordinated directional drop yesterday, so ${lowerCount} coins formed <strong>Lower Value CPRs</strong> today.
+                       </span>
+                       <div class="mt-4 flex flex-wrap items-center justify-center gap-3">
+                         <button onclick="setMode('developing')" class="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-black font-bold text-xs shadow transition-all cursor-pointer">⚡ Switch to Tomorrow (Developing Inside Value)</button>
+                         <button onclick="setQuickFilter('all')" class="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs shadow transition-all cursor-pointer">📊 View All ${scanData.length} 2-Day Trends</button>
+                         <button onclick="setQuickFilter('lower')" class="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs shadow transition-all cursor-pointer">🐻 View ${lowerCount} Lower Value Trends</button>
+                       </div>`
                     : `No matching setups found right now.<br><span class="text-xs text-slate-500 mt-1 inline-block">Try switching filter pill, market or strategy.</span>`;
                 tbody.innerHTML = `
                     <tr>
@@ -3209,7 +3240,7 @@ def api_scan():
         if market == "crypto_all":
             # On serverless environments, limit max_coins to prevent function execution timeout
             is_serverless = os.environ.get("VERCEL") == "1" or os.environ.get("AWS_LAMBDA_FUNCTION_NAME") is not None
-            max_limit = 150 if is_serverless else 800
+            max_limit = 250 if is_serverless else 800
             symbols = BINANCE_MGR.get_binance_symbols(min_quote_vol=min_mc, max_coins=max_limit)
         elif market == "crypto_coinbase":
             is_serverless = os.environ.get("VERCEL") == "1" or os.environ.get("AWS_LAMBDA_FUNCTION_NAME") is not None
