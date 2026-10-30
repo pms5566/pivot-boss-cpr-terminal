@@ -83,6 +83,10 @@ WATCHLISTS = {
             "CFX-USD", "ACH-USD", "JASMY-USD", "GNO-USD", "LRC-USD", "ZRX-USD", "BAT-USD",
             "ANKR-USD", "AKT-USD", "ARKM-USD", "WLD-USD", "ONDO-USD", "TRU-USD", "POLYX-USD", "OM-USD"
         ]
+    },
+    "crypto_coinbase": {
+        "name": "🔵 Coinbase Crypto (USD Pairs)",
+        "symbols": []
     }
 }
 
@@ -115,7 +119,9 @@ class BinanceAPIManager:
 
         self.dns_cache = {
             'api.binance.com': resolve_doh('api.binance.com'),
-            'fapi.binance.com': resolve_doh('fapi.binance.com')
+            'fapi.binance.com': resolve_doh('fapi.binance.com'),
+            'api.exchange.coinbase.com': resolve_doh('api.exchange.coinbase.com'),
+            'api.coinbase.com': resolve_doh('api.coinbase.com')
         }
         _orig = connection.create_connection
         dns_map = self.dns_cache
@@ -515,6 +521,194 @@ class BinanceAPIManager:
         }
 
 BINANCE_MGR = BinanceAPIManager()
+
+class CoinbaseAPIManager:
+    def __init__(self):
+        self.session = requests.Session()
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36'
+        })
+        adapter = requests.adapters.HTTPAdapter(pool_connections=60, pool_maxsize=60, max_retries=1)
+        self.session.mount('https://', adapter)
+        self.session.mount('http://', adapter)
+        self.ticker_cache = []
+        self.ticker_time = 0
+        self.vol_cache = {}
+        self.price_cache = {}
+        self.bars_cache = {}
+
+    def get_coinbase_symbols(self, min_quote_vol=0, max_coins=800):
+        now = time.time()
+        if self.ticker_cache and (now - self.ticker_time < 60):
+            filtered = [s for s, v in self.ticker_cache if v >= min_quote_vol]
+            return filtered[:max_coins]
+
+        prod_list = []
+        try:
+            r = self.session.get("https://api.exchange.coinbase.com/products", timeout=5)
+            if r.status_code == 200:
+                prod_list = r.json()
+        except Exception:
+            pass
+
+        vol_map = {}
+        try:
+            r_vol = self.session.get("https://api.exchange.coinbase.com/products/volume-summary", timeout=5)
+            if r_vol.status_code == 200:
+                vol_data = r_vol.json()
+                if isinstance(vol_data, list):
+                    vol_map = {v.get("id"): float(v.get("spot_volume_24hour") or 0) for v in vol_data if isinstance(v, dict)}
+        except Exception:
+            pass
+
+        price_map = {}
+        try:
+            r_rates = self.session.get("https://api.coinbase.com/v2/exchange-rates?currency=USD", timeout=5)
+            if r_rates.status_code == 200:
+                rates = r_rates.json().get("data", {}).get("rates", {})
+                for base, rate_str in rates.items():
+                    try:
+                        r_val = float(rate_str)
+                        if r_val > 0:
+                            price_map[base] = 1.0 / r_val
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        stables_junk = {
+            "USDC-USD", "USDT-USD", "USD-USDT", "USD-USDC", "EUR-USD", "USDC-USDT",
+            "USDT-USDC", "EURC-EUR", "PYUSD-USD", "DAI-USD", "FDUSD-USD"
+        }
+
+        symbols_with_vol = []
+        if isinstance(prod_list, list):
+            for p in prod_list:
+                if not isinstance(p, dict):
+                    continue
+                pid = p.get("id", "")
+                quote = p.get("quote_currency", "")
+                base = p.get("base_currency", "")
+                if quote in ["USD", "USDC", "USDT"] and pid not in stables_junk and p.get("status") == "online":
+                    base_vol = vol_map.get(pid, 0.0)
+                    price = price_map.get(base, 0.0)
+                    usd_vol = base_vol * price
+                    self.vol_cache[pid] = usd_vol
+                    if price > 0:
+                        self.price_cache[pid] = price
+                    symbols_with_vol.append((pid, usd_vol))
+
+        symbols_with_vol.sort(key=lambda x: x[1], reverse=True)
+        self.ticker_cache = symbols_with_vol
+        self.ticker_time = now
+
+        priority = [
+            "BTC-USD", "ETH-USD", "SOL-USD", "XRP-USD", "DOGE-USD", "ADA-USD",
+            "AVAX-USD", "SUI-USD", "NEAR-USD", "PEPE-USD", "LINK-USD", "LTC-USD",
+            "HYPE-USD", "UNI-USD", "BCH-USD", "AAVE-USD", "DOT-USD"
+        ]
+        sym_list = [s[0] for s in symbols_with_vol if s[1] >= min_quote_vol]
+        sorted_symbols = [p for p in priority if p in sym_list] + [s for s in sym_list if s not in priority]
+        return sorted_symbols[:max_coins]
+
+    def fetch_market_bars(self, symbol):
+        sym = symbol.replace("USDT", "-USD").replace("USDC", "-USD").replace(".NS", "").replace("^", "")
+        if not sym.endswith("-USD"):
+            sym = sym + "-USD"
+
+        now = time.time()
+        if sym in self.bars_cache:
+            ts, m_bars, d_bars = self.bars_cache[sym]
+            if now - ts < 60:
+                return m_bars, d_bars
+
+        raw_candles = []
+        try:
+            r = self.session.get(f"https://api.exchange.coinbase.com/products/{sym}/candles?granularity=86400", timeout=4)
+            if r.status_code == 200:
+                data = r.json()
+                if isinstance(data, list) and len(data) >= 5:
+                    raw_candles = data
+        except Exception:
+            pass
+
+        if not raw_candles:
+            try:
+                r = self.session.get(f"https://api.coinbase.com/api/v3/brokerage/market/products/{sym}/candles?granularity=ONE_DAY", timeout=4)
+                if r.status_code == 200:
+                    data = r.json()
+                    c_list = data.get("candles", [])
+                    if isinstance(c_list, list) and len(c_list) >= 5:
+                        raw_candles = [
+                            [int(c["start"]), float(c["low"]), float(c["high"]), float(c["open"]), float(c["close"]), float(c["volume"])]
+                            for c in c_list if "start" in c
+                        ]
+            except Exception:
+                pass
+
+        if not raw_candles or len(raw_candles) < 5:
+            return [], []
+
+        raw_candles.sort(key=lambda x: x[0])
+
+        daily_candles = []
+        for c in raw_candles:
+            dt = datetime.datetime.fromtimestamp(c[0], tz=datetime.timezone.utc).strftime("%Y-%m-%d")
+            daily_candles.append({
+                "date": dt,
+                "time": int(c[0]),
+                "open": float(c[3]),
+                "high": float(c[2]),
+                "low": float(c[1]),
+                "close": float(c[4]),
+                "volume": float(c[5])
+            })
+
+        monthly_dict = {}
+        for c in daily_candles:
+            mo_key = c['date'][:7]
+            if mo_key not in monthly_dict:
+                monthly_dict[mo_key] = {
+                    'date': c['date'],
+                    'time': c['time'],
+                    'open': c['open'],
+                    'high': c['high'],
+                    'low': c['low'],
+                    'close': c['close'],
+                    'volume': c['volume']
+                }
+            else:
+                monthly_dict[mo_key]['high'] = max(monthly_dict[mo_key]['high'], c['high'])
+                monthly_dict[mo_key]['low'] = min(monthly_dict[mo_key]['low'], c['low'])
+                monthly_dict[mo_key]['close'] = c['close']
+                monthly_dict[mo_key]['volume'] += c['volume']
+
+        monthly_bars = [monthly_dict[k] for k in sorted(monthly_dict.keys())]
+
+        self.bars_cache[sym] = (now, monthly_bars, daily_candles)
+        return monthly_bars, daily_candles
+
+    def get_spot_volume(self, symbol):
+        sym = symbol.replace("USDT", "-USD").replace("USDC", "-USD").replace(".NS", "").replace("^", "")
+        if not sym.endswith("-USD"):
+            sym = sym + "-USD"
+        now = time.time()
+        if not self.vol_cache or (now - self.ticker_time >= 60):
+            self.get_coinbase_symbols()
+        return self.vol_cache.get(sym, 0.0)
+
+    def format_usd(self, val):
+        if val is None or val <= 0:
+            return None
+        if val >= 1_000_000_000:
+            return f"${val / 1_000_000_000:.2f}B"
+        if val >= 1_000_000:
+            return f"${val / 1_000_000:.1f}M"
+        if val >= 1_000:
+            return f"${val / 1_000:.0f}K"
+        return f"${val:.1f}"
+
+COINBASE_MGR = CoinbaseAPIManager()
 
 class YahooSessionManager:
     def __init__(self):
@@ -1037,7 +1231,14 @@ def process_cpr_setup(symbol, timeframe="monthly", mode="active"):
     """Inside Value CPR calculation"""
     is_crypto = symbol.endswith("USDT") or symbol.endswith("USDC") or ("-USD" in symbol)
     if is_crypto:
-        monthly_bars, daily_candles = BINANCE_MGR.fetch_market_bars(symbol)
+        if symbol.endswith("-USD"):
+            monthly_bars, daily_candles = COINBASE_MGR.fetch_market_bars(symbol)
+            if not daily_candles:
+                monthly_bars, daily_candles = BINANCE_MGR.fetch_market_bars(symbol)
+        else:
+            monthly_bars, daily_candles = BINANCE_MGR.fetch_market_bars(symbol)
+            if not daily_candles:
+                monthly_bars, daily_candles = COINBASE_MGR.fetch_market_bars(symbol)
     else:
         monthly_bars, daily_candles = YAHOO_MGR.fetch_market_bars(symbol)
     
@@ -1231,10 +1432,18 @@ def process_cpr_setup(symbol, timeframe="monthly", mode="active"):
     clean_symbol = symbol.replace("USDT", "").replace("USDC", "").replace("-USD", "").replace(".NS", "").replace("^", "")
     
     if is_crypto:
-        oi_info = BINANCE_MGR.get_crypto_derivatives(symbol)
-        vol_usd = (oi_info.get("vol_24h_usd") or 0) if oi_info else BINANCE_MGR.get_spot_volume(symbol)
+        if symbol.endswith("-USD"):
+            vol_usd = COINBASE_MGR.get_spot_volume(symbol)
+            oi_info = BINANCE_MGR.get_crypto_derivatives(symbol)
+            if not vol_usd and oi_info:
+                vol_usd = (oi_info.get("vol_24h_usd") or 0)
+        else:
+            oi_info = BINANCE_MGR.get_crypto_derivatives(symbol)
+            vol_usd = (oi_info.get("vol_24h_usd") or 0) if oi_info else BINANCE_MGR.get_spot_volume(symbol)
+            if not vol_usd:
+                vol_usd = COINBASE_MGR.get_spot_volume(symbol)
         market_cap = vol_usd
-        mc_formatted = (oi_info["vol_formatted"] + " 24h Vol") if (oi_info and oi_info.get("vol_formatted") and oi_info["vol_formatted"] != "-") else (BINANCE_MGR.format_usd(vol_usd) + " 24h Vol" if vol_usd > 0 else None)
+        mc_formatted = (oi_info["vol_formatted"] + " 24h Vol") if (oi_info and oi_info.get("vol_formatted") and oi_info["vol_formatted"] != "-") else (BINANCE_MGR.format_usd(vol_usd) + " 24h Vol" if vol_usd > 0 else (COINBASE_MGR.format_usd(vol_usd) + " 24h Vol" if vol_usd > 0 else None))
     else:
         oi_info = None
         market_cap = None
@@ -1279,7 +1488,14 @@ def process_virgin_cpr_daily(symbol, max_days=10):
     """
     is_crypto = symbol.endswith("USDT") or symbol.endswith("USDC") or ("-USD" in symbol)
     if is_crypto:
-        monthly_bars, daily_candles = BINANCE_MGR.fetch_market_bars(symbol)
+        if symbol.endswith("-USD"):
+            monthly_bars, daily_candles = COINBASE_MGR.fetch_market_bars(symbol)
+            if not daily_candles:
+                monthly_bars, daily_candles = BINANCE_MGR.fetch_market_bars(symbol)
+        else:
+            monthly_bars, daily_candles = BINANCE_MGR.fetch_market_bars(symbol)
+            if not daily_candles:
+                monthly_bars, daily_candles = COINBASE_MGR.fetch_market_bars(symbol)
     else:
         monthly_bars, daily_candles = YAHOO_MGR.fetch_market_bars(symbol)
     if len(daily_candles) < max_days + 2:
@@ -1295,10 +1511,18 @@ def process_virgin_cpr_daily(symbol, max_days=10):
     clean_symbol = symbol.replace("USDT", "").replace("USDC", "").replace("-USD", "").replace(".NS", "").replace("^", "")
     
     if is_crypto:
-        oi_info = BINANCE_MGR.get_crypto_derivatives(symbol)
-        vol_usd = (oi_info.get("vol_24h_usd") or 0) if oi_info else BINANCE_MGR.get_spot_volume(symbol)
+        if symbol.endswith("-USD"):
+            vol_usd = COINBASE_MGR.get_spot_volume(symbol)
+            oi_info = BINANCE_MGR.get_crypto_derivatives(symbol)
+            if not vol_usd and oi_info:
+                vol_usd = (oi_info.get("vol_24h_usd") or 0)
+        else:
+            oi_info = BINANCE_MGR.get_crypto_derivatives(symbol)
+            vol_usd = (oi_info.get("vol_24h_usd") or 0) if oi_info else BINANCE_MGR.get_spot_volume(symbol)
+            if not vol_usd:
+                vol_usd = COINBASE_MGR.get_spot_volume(symbol)
         market_cap = vol_usd
-        mc_formatted = (oi_info["vol_formatted"] + " 24h Vol") if (oi_info and oi_info.get("vol_formatted") and oi_info["vol_formatted"] != "-") else (BINANCE_MGR.format_usd(vol_usd) + " 24h Vol" if vol_usd > 0 else None)
+        mc_formatted = (oi_info["vol_formatted"] + " 24h Vol") if (oi_info and oi_info.get("vol_formatted") and oi_info["vol_formatted"] != "-") else (BINANCE_MGR.format_usd(vol_usd) + " 24h Vol" if vol_usd > 0 else (COINBASE_MGR.format_usd(vol_usd) + " 24h Vol" if vol_usd > 0 else None))
     else:
         oi_info = None
         market_cap = None
@@ -1479,6 +1703,9 @@ DASHBOARD_HTML = """
                     <button onclick="setMarket('crypto_all')" id="btn-crypto" class="px-3 py-1.5 rounded-lg transition-all text-white bg-indigo-600 font-semibold shadow">
                         🪙 Binance Crypto
                     </button>
+                    <button onclick="setMarket('crypto_coinbase')" id="btn-coinbase" class="px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white">
+                        🔵 Coinbase Crypto
+                    </button>
                     <button onclick="setMarket('india_all')" id="btn-india" class="px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white">
                         🇮🇳 India
                     </button>
@@ -1489,8 +1716,8 @@ DASHBOARD_HTML = """
 
                 <!-- Crypto 24h Volume Filter (Visible when Crypto is active) -->
                 <div id="crypto-mc-controls" class="flex items-center bg-navy-950 p-1 rounded-xl border border-indigo-500/30 text-xs font-medium shadow-inner">
-                    <button onclick="setMinMC(0)" id="btn-mc-all" class="px-2.5 py-1.5 rounded-lg transition-all text-white bg-indigo-600 font-bold shadow" title="All 700+ Binance USDT Pairs">
-                        🌐 Binance All (700+)
+                    <button onclick="setMinMC(0)" id="btn-mc-all" class="px-2.5 py-1.5 rounded-lg transition-all text-white bg-indigo-600 font-bold shadow" title="All Liquid Pairs">
+                        <span id="btn-mc-all-label">🌐 All Pairs</span>
                     </button>
                     <button onclick="setMinMC(1000000)" id="btn-mc-5m" class="px-2.5 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white" title="High Liquidity >= $1M 24h Volume">
                         🔥 ≥ $1M Vol
@@ -2264,27 +2491,31 @@ DASHBOARD_HTML = """
                 }
 
                 // Crypto market banner adjustments
-                if (currentMarket === 'crypto_all') {
+                if (currentMarket === 'crypto_all' || currentMarket === 'crypto_coinbase') {
+                    const isCoinbase = currentMarket === 'crypto_coinbase';
+                    const exchangeName = isCoinbase ? 'Coinbase' : 'Binance';
+                    const totalLabel = isCoinbase ? '400+ Pairs' : '700+ Pairs';
                     const volLabel = currentMinMC >= 1000000 ? `$${(currentMinMC/1e6).toFixed(0)}M` : (currentMinMC > 0 ? `$${currentMinMC}` : 'All');
                     if (currentStrategy === 'virgin_cpr') {
-                        tableTitle.innerText = `🛡️ Verified Binance Daily Virgin CPRs (${volLabel === 'All' ? '700+ Pairs' : `24h Vol ≥ ${volLabel}`})`;
-                        bannerDesc.innerHTML = `Price has <strong>never touched these CPR pivot ranges</strong> since formation! Tracking Binance pairs with <strong>${volLabel === 'All' ? 'All Liquid Pairs' : `24h Turnover ≥ ${volLabel}`}</strong> via official Binance API.`;
+                        tableTitle.innerText = `🛡️ Verified ${exchangeName} Daily Virgin CPRs (${volLabel === 'All' ? totalLabel : `24h Vol ≥ ${volLabel}`})`;
+                        bannerDesc.innerHTML = `Price has <strong>never touched these CPR pivot ranges</strong> since formation! Tracking ${exchangeName} pairs with <strong>${volLabel === 'All' ? 'All Liquid Pairs' : `24h Turnover ≥ ${volLabel}`}</strong> via official ${exchangeName} API.`;
                     } else {
                         const tfName = currentTimeframe === 'daily' ? 'DAILY' : (currentTimeframe === 'monthly' ? 'MONTHLY' : 'QUARTERLY');
                         const modeName = currentMode === 'developing' ? 'DEVELOPING' : 'ACTIVE';
-                        tableTitle.innerText = `🔥 Verified Binance ${tfName} ${modeName} Inside Value (${volLabel === 'All' ? '700+ Pairs' : `24h Vol ≥ ${volLabel}`})`;
-                        bannerDesc.innerHTML = `Scanning volatility compression coils across <strong>Binance USDT pairs</strong> with <strong>Live Futures Open Interest & Squeeze Ratios</strong>.`;
+                        tableTitle.innerText = `🔥 Verified ${exchangeName} ${tfName} ${modeName} Inside Value (${volLabel === 'All' ? totalLabel : `24h Vol ≥ ${volLabel}`})`;
+                        bannerDesc.innerHTML = `Scanning volatility compression coils across <strong>${exchangeName} Pairs</strong> with <strong>Live Pivot Boss CPR Calculations</strong>.`;
                     }
                 }
             }
 
             // Market selector styles
-            ['india', 'us', 'crypto'].forEach(m => {
+            ['india', 'us', 'crypto', 'coinbase'].forEach(m => {
                 const btn = document.getElementById(`btn-${m}`);
                 if (btn) {
                     if ((m === 'india' && currentMarket === 'india_all') ||
                         (m === 'us' && currentMarket === 'us_russell2000') ||
-                        (m === 'crypto' && currentMarket === 'crypto_all')) {
+                        (m === 'crypto' && currentMarket === 'crypto_all') ||
+                        (m === 'coinbase' && currentMarket === 'crypto_coinbase')) {
                         btn.className = 'px-3 py-1.5 rounded-lg transition-all text-white bg-indigo-600 font-bold shadow';
                     } else {
                         btn.className = 'px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white';
@@ -2294,8 +2525,10 @@ DASHBOARD_HTML = """
 
             // Crypto 24h Volume Filter Controls
             const mcControls = document.getElementById('crypto-mc-controls');
-            if (currentMarket === 'crypto_all' && currentStrategy !== 'oi_radar') {
+            if ((currentMarket === 'crypto_all' || currentMarket === 'crypto_coinbase') && currentStrategy !== 'oi_radar') {
                 if (mcControls) mcControls.classList.remove('hidden');
+                const lbl = document.getElementById('btn-mc-all-label');
+                if (lbl) lbl.innerText = currentMarket === 'crypto_coinbase' ? '🔵 Coinbase All (400+)' : '🌐 Binance All (700+)';
                 ['all', '5m', '50m', '500m'].forEach(k => {
                     const btn = document.getElementById(`btn-mc-${k}`);
                     if (btn) btn.className = 'px-2.5 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white';
@@ -2347,7 +2580,7 @@ DASHBOARD_HTML = """
             const icon = document.getElementById('refresh-icon');
             icon.classList.add('animate-spin');
             
-            const isCrypto = currentMarket === 'crypto_all';
+            const isCrypto = currentMarket === 'crypto_all' || currentMarket === 'crypto_coinbase';
 
             // Set Table Head according to strategy & market
             if (currentStrategy === 'virgin_cpr') {
@@ -2508,7 +2741,9 @@ DASHBOARD_HTML = """
                 return 0;
             });
 
-            const isCrypto = currentMarket === 'crypto_all';
+            const isCrypto = currentMarket === 'crypto_all' || currentMarket === 'crypto_coinbase';
+            const tvExchange = currentMarket === 'crypto_coinbase' ? 'COINBASE' : 'BINANCE';
+            const exchangeBadge = currentMarket === 'crypto_coinbase' ? 'Coinbase' : 'Binance';
             const tbody = document.getElementById('table-body');
             if (filtered.length === 0) {
                 tbody.innerHTML = `
@@ -2528,6 +2763,7 @@ DASHBOARD_HTML = """
                     const chgColor = item.change >= 0 ? 'text-emerald-400' : 'text-rose-400';
                     const chgSign = item.change >= 0 ? '+' : '';
                     const distColor = item.dist_pct > 0 ? 'text-emerald-400' : 'text-rose-400';
+                    const tvUrl = isCrypto ? `https://www.tradingview.com/chart/?symbol=${tvExchange}:${currentMarket === 'crypto_coinbase' ? `${item.clean_symbol}USD` : `${item.clean_symbol}USDT`}` : '';
 
                     if (isCrypto) {
                         let radarBadge = '';
@@ -2544,7 +2780,7 @@ DASHBOARD_HTML = """
                                         <span>${item.clean_symbol}</span>
                                         ${item.mc_formatted ? `<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">${item.mc_formatted}</span>` : ''}
                                     </div>
-                                    <div class="text-[10px] text-slate-500 font-sans">${item.symbol} • Binance</div>
+                                    <div class="text-[10px] text-slate-500 font-sans">${item.symbol} • ${exchangeBadge}</div>
                                 </td>
                                 <td class="py-3.5 px-4">
                                     <div class="font-bold text-slate-100">${item.ltp.toLocaleString()}</div>
@@ -2585,7 +2821,7 @@ DASHBOARD_HTML = """
                                 </td>
                                 <td class="py-3.5 px-4 text-center">
                                     <div class="flex items-center justify-center gap-1.5">
-                                        <a href="https://www.tradingview.com/chart/?symbol=BINANCE:${item.clean_symbol}USDT" target="_blank" rel="noopener" class="px-2 py-1 rounded-lg bg-navy-800 hover:bg-sky-600 hover:text-white text-slate-300 font-sans text-xs transition border border-navy-700 shadow font-semibold" title="Open TradingView">
+                                        <a href="${tvUrl}" target="_blank" rel="noopener" class="px-2 py-1 rounded-lg bg-navy-800 hover:bg-sky-600 hover:text-white text-slate-300 font-sans text-xs transition border border-navy-700 shadow font-semibold" title="Open TradingView">
                                             TV ↗
                                         </a>
                                         <button onclick="openChart('${item.symbol}', '${item.virgin_date}')" class="px-2.5 py-1 rounded-lg bg-navy-800 hover:bg-rose-500 hover:text-white text-slate-200 font-sans text-xs transition border border-navy-700 shadow font-semibold">
@@ -2648,7 +2884,7 @@ DASHBOARD_HTML = """
                                         <span>${item.clean_symbol}</span>
                                         ${item.mc_formatted ? `<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">${item.mc_formatted}</span>` : ''}
                                     </div>
-                                    <div class="text-[10px] text-slate-500 font-sans">${item.symbol} • Binance</div>
+                                    <div class="text-[10px] text-slate-500 font-sans">${item.symbol} • ${exchangeBadge}</div>
                                 </td>
                                 <td class="py-3.5 px-4">
                                     <div class="font-bold text-slate-100">${item.ltp.toLocaleString()}</div>
@@ -2688,7 +2924,7 @@ DASHBOARD_HTML = """
                                 </td>
                                 <td class="py-3.5 px-4 text-center">
                                     <div class="flex items-center justify-center gap-1.5">
-                                        <a href="https://www.tradingview.com/chart/?symbol=BINANCE:${item.clean_symbol}USDT" target="_blank" rel="noopener" class="px-2 py-1 rounded-lg bg-navy-800 hover:bg-sky-600 hover:text-white text-slate-300 font-sans text-xs transition border border-navy-700 shadow font-semibold" title="Open TradingView">
+                                        <a href="https://www.tradingview.com/chart/?symbol=${tvExchange}:${currentMarket === 'crypto_coinbase' ? `${item.clean_symbol}USD` : `${item.clean_symbol}USDT`}" target="_blank" rel="noopener" class="px-2 py-1 rounded-lg bg-navy-800 hover:bg-sky-600 hover:text-white text-slate-300 font-sans text-xs transition border border-navy-700 shadow font-semibold" title="Open TradingView">
                                             TV ↗
                                         </a>
                                         <button onclick="openChart('${item.symbol}')" class="px-2.5 py-1 rounded-lg bg-navy-800 hover:bg-amber-500 hover:text-black text-slate-200 font-sans text-xs transition border border-navy-700 shadow font-semibold">
@@ -2885,6 +3121,25 @@ def api_debug():
     except Exception as e:
         info["binance_vision_klines"] = {"error": str(e)}
 
+    try:
+        cb_syms = COINBASE_MGR.get_coinbase_symbols(max_coins=10)
+        info["coinbase_products"] = {
+            "status": 200 if cb_syms else 500,
+            "sample_count": len(cb_syms),
+            "sample": cb_syms[:5]
+        }
+    except Exception as e:
+        info["coinbase_products"] = {"error": str(e)}
+
+    try:
+        cb_m, cb_d = COINBASE_MGR.fetch_market_bars("BTC-USD")
+        info["coinbase_btc_bars"] = {
+            "daily_bars": len(cb_d),
+            "monthly_bars": len(cb_m)
+        }
+    except Exception as e:
+        info["coinbase_btc_bars"] = {"error": str(e)}
+
     return jsonify(info)
 
 @app.route("/api/scan")
@@ -2901,12 +3156,16 @@ def api_scan():
             is_serverless = os.environ.get("VERCEL") == "1" or os.environ.get("AWS_LAMBDA_FUNCTION_NAME") is not None
             max_limit = 150 if is_serverless else 800
             symbols = BINANCE_MGR.get_binance_symbols(min_quote_vol=min_mc, max_coins=max_limit)
+        elif market == "crypto_coinbase":
+            is_serverless = os.environ.get("VERCEL") == "1" or os.environ.get("AWS_LAMBDA_FUNCTION_NAME") is not None
+            max_limit = 150 if is_serverless else 450
+            symbols = COINBASE_MGR.get_coinbase_symbols(min_quote_vol=min_mc, max_coins=max_limit)
         else:
             watchlist_info = WATCHLISTS.get(market, WATCHLISTS["india_all"])
             symbols = watchlist_info["symbols"]
         
         results = []
-        workers = 30 if market == "crypto_all" else 10
+        workers = 30 if (market in ["crypto_all", "crypto_coinbase"]) else 10
         with ThreadPoolExecutor(max_workers=workers) as executor:
             if strategy == "virgin_cpr":
                 futures = [executor.submit(process_virgin_cpr_daily, sym, 10) for sym in symbols]
