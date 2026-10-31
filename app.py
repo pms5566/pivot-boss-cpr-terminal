@@ -144,7 +144,7 @@ class BinanceAPIManager:
         # Daily bars
         d_raw = []
         try:
-            r_d = self.session.get(f"https://data-api.binance.vision/api/v3/klines?symbol={sym}&interval=1d&limit=45", timeout=4)
+            r_d = self.session.get(f"https://data-api.binance.vision/api/v3/klines?symbol={sym}&interval=1d&limit=120", timeout=4)
             data = r_d.json()
             if isinstance(data, list):
                 d_raw = data
@@ -153,7 +153,7 @@ class BinanceAPIManager:
 
         if not d_raw:
             try:
-                r_d = self.session.get(f"https://api.binance.com/api/v3/klines?symbol={sym}&interval=1d&limit=45", timeout=4)
+                r_d = self.session.get(f"https://api.binance.com/api/v3/klines?symbol={sym}&interval=1d&limit=120", timeout=4)
                 data = r_d.json()
                 if isinstance(data, list):
                     d_raw = data
@@ -176,10 +176,10 @@ class BinanceAPIManager:
                 "volume": float(b[5])
             })
 
-        # Monthly bars
+        # Monthly bars (24 months = 8 quarters)
         m_raw = []
         try:
-            r_m = self.session.get(f"https://data-api.binance.vision/api/v3/klines?symbol={sym}&interval=1M&limit=12", timeout=4)
+            r_m = self.session.get(f"https://data-api.binance.vision/api/v3/klines?symbol={sym}&interval=1M&limit=24", timeout=4)
             data = r_m.json()
             if isinstance(data, list):
                 m_raw = data
@@ -188,8 +188,12 @@ class BinanceAPIManager:
 
         if not m_raw:
             try:
-                r_m = self.session.get(f"https://api.binance.com/api/v3/klines?symbol={sym}&interval=1M&limit=12", timeout=4)
+                r_m = self.session.get(f"https://api.binance.com/api/v3/klines?symbol={sym}&interval=1M&limit=24", timeout=4)
                 data = r_m.json()
+                if isinstance(data, list):
+                    m_raw = data
+            except Exception:
+                m_raw = []
                 if isinstance(data, list):
                     m_raw = data
             except Exception:
@@ -496,7 +500,9 @@ def process_cpr_setup(symbol, timeframe="monthly", mode="active"):
 
     if timeframe == "quarterly":
         quarterly_dict = {}
-        for c in daily_candles:
+        # Aggregate monthly bars into quarters (preferred since monthly_bars spans 24 months)
+        bars_to_use = monthly_bars if (monthly_bars and len(monthly_bars) >= 3) else daily_candles
+        for c in bars_to_use:
             dt_str = c['date']
             y = dt_str[:4]
             m = int(dt_str[5:7])
@@ -505,6 +511,7 @@ def process_cpr_setup(symbol, timeframe="monthly", mode="active"):
             if q_key not in quarterly_dict:
                 quarterly_dict[q_key] = {
                     'quarter': q_key,
+                    'open': c.get('open', 0),
                     'high': c['high'],
                     'low': c['low'],
                     'close': c['close']
@@ -515,36 +522,43 @@ def process_cpr_setup(symbol, timeframe="monthly", mode="active"):
                 quarterly_dict[q_key]['close'] = c['close']
 
         sorted_quarters = [quarterly_dict[k] for k in sorted(quarterly_dict.keys())]
-        if len(sorted_quarters) < 3:
-            return None
 
         last_price = daily_candles[-1]['close']
         dec = 8 if last_price < 0.001 else (6 if last_price < 0.01 else (4 if last_price < 1.0 else (3 if last_price < 10.0 else 2)))
         
-        curr_q = sorted_quarters[-1]
-        prev_q = sorted_quarters[-2]
-        prev2_q = sorted_quarters[-3]
-        
         if mode == "developing":
+            if len(sorted_quarters) < 2:
+                return None
+            curr_q = sorted_quarters[-1]
+            prev_q = sorted_quarters[-2]
             cpr_target = calculate_cpr_and_pivots(curr_q['high'], curr_q['low'], curr_q['close'], dec)
             cpr_base = calculate_cpr_and_pivots(prev_q['high'], prev_q['low'], prev_q['close'], dec)
-            target_label = f"Next Quarter ({curr_q['quarter']})"
-            base_label = f"Current Quarter ({prev_q['quarter']})"
+            
+            q_num = int(curr_q['quarter'][-1])
+            q_year = int(curr_q['quarter'][:4])
+            next_q = f"{q_year + 1}-Q1" if q_num == 4 else f"{q_year}-Q{q_num + 1}"
+            target_label = f"Next Quarter ({next_q} Dev)"
+            base_label = f"Current Quarter ({curr_q['quarter']})"
             trigger_h = round(curr_q['high'], dec)
             trigger_l = round(curr_q['low'], dec)
             trigger_name_h = "QTD High (Buy)"
             trigger_name_l = "QTD Low (Sell)"
+            base_prev_close = prev_q['close']
         else:
+            if len(sorted_quarters) < 3:
+                return None
+            curr_q = sorted_quarters[-1]
+            prev_q = sorted_quarters[-2]
+            prev2_q = sorted_quarters[-3]
             cpr_target = calculate_cpr_and_pivots(prev_q['high'], prev_q['low'], prev_q['close'], dec)
             cpr_base = calculate_cpr_and_pivots(prev2_q['high'], prev2_q['low'], prev2_q['close'], dec)
-            target_label = f"Current Quarter ({prev_q['quarter']})"
-            base_label = f"Prior Quarter ({prev2_q['quarter']})"
+            target_label = f"Current Quarter ({curr_q['quarter']})"
+            base_label = f"Prior Quarter ({prev_q['quarter']})"
             trigger_h = round(prev_q['high'], dec)
             trigger_l = round(prev_q['low'], dec)
             trigger_name_h = "PQ High (Buy)"
             trigger_name_l = "PQ Low (Sell)"
-            
-        base_prev_close = prev_q['close']
+            base_prev_close = prev_q['close']
 
     elif timeframe == "monthly":
         if not monthly_bars or len(monthly_bars) < 3:
@@ -570,17 +584,17 @@ def process_cpr_setup(symbol, timeframe="monthly", mode="active"):
             trigger_l = round(curr_m['low'], dec)
             trigger_name_h = "MTD High (Buy)"
             trigger_name_l = "MTD Low (Sell)"
+            base_prev_close = prev_m['close']
         else:
             cpr_target = calculate_cpr_and_pivots(prev_m['high'], prev_m['low'], prev_m['close'], dec)
             cpr_base = calculate_cpr_and_pivots(prev2_m['high'], prev2_m['low'], prev2_m['close'], dec)
-            target_label = f"Current Month ({prev_m_lbl})"
-            base_label = f"Previous Month ({prev2_m_lbl})"
+            target_label = f"Current Month ({curr_m_lbl})"
+            base_label = f"Previous Month ({prev_m_lbl})"
             trigger_h = round(prev_m['high'], dec)
             trigger_l = round(prev_m['low'], dec)
             trigger_name_h = "PM High (Buy)"
             trigger_name_l = "PM Low (Sell)"
-            
-        base_prev_close = prev_m['close']
+            base_prev_close = prev_m['close']
 
     else: # timeframe == "daily"
         if len(daily_candles) < 3: return None
