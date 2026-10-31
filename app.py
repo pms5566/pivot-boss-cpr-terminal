@@ -160,16 +160,37 @@ class BinanceAPIManager:
                     pass
 
         symbols = []
-        stables_junk = {'USDCUSDT', 'FDUSDUSDT', 'TUSDUSDT', 'USDPUSDT', 'EURUSDT', 'BUSDUSDT', 'AEURUSDT', 'DAIUSDT'}
+        stables_junk = {
+            'USDCUSDT', 'FDUSDUSDT', 'TUSDUSDT', 'USDPUSDT', 'EURUSDT', 'BUSDUSDT', 'AEURUSDT', 'DAIUSDT',
+            'RLUSDUSDT', 'UUSDT', 'USD1USDT', 'BFUSDUSDT', 'RWUSDUSDT', 'XUSDUSDT', 'USDEUSDT', 'PYUSDUSDT',
+            'PAXGUSDT', 'XAUTUSDT', 'USDYUSDT', 'STETHUSDT', 'WBTCUSDT', 'WETHUSDT', 'USDDUSDT', 'FRAXUSDT',
+            'LUSDUSDT', 'GUSDUSDT', 'EURIUSDT', 'USDSUSDT'
+        }
         if isinstance(tickers, list):
             for t in tickers:
                 if not isinstance(t, dict): continue
                 sym = t.get("symbol", "")
-                if sym.endswith("USDT") and sym not in stables_junk:
-                    q_vol = float(t.get("quoteVolume", 0) or 0)
-                    price = float(t.get("lastPrice", 0) or 0)
-                    if q_vol >= min_quote_vol and price > 0:
-                        symbols.append((sym, q_vol))
+                if not sym.endswith("USDT") or sym in stables_junk:
+                    continue
+                # Exclude leveraged tokens and synthetic tokens
+                if "UPUSDT" in sym or "DOWNUSDT" in sym or "BULLUSDT" in sym or "BEARUSDT" in sym:
+                    continue
+                if sym.endswith("BUSDT") and len(sym) > 8:
+                    continue
+                base = sym.replace("USDT", "")
+                if not base.isascii() or not base.isalnum():
+                    continue
+
+                # Exclude dead/delisted symbols with zero bid/ask
+                bid = float(t.get("bidPrice", 0) or 0)
+                ask = float(t.get("askPrice", 0) or 0)
+                if bid == 0 and ask == 0:
+                    continue
+
+                q_vol = float(t.get("quoteVolume", 0) or 0)
+                price = float(t.get("lastPrice", 0) or 0)
+                if q_vol >= min_quote_vol and price > 0:
+                    symbols.append((sym, q_vol))
         
         symbols.sort(key=lambda x: x[1], reverse=True)
         priority = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "SUIUSDT", "NEARUSDT", "PEPEUSDT", "LINKUSDT", "LTCUSDT"]
@@ -579,7 +600,8 @@ class CoinbaseAPIManager:
 
         stables_junk = {
             "USDC-USD", "USDT-USD", "USD-USDT", "USD-USDC", "EUR-USD", "USDC-USDT",
-            "USDT-USDC", "EURC-EUR", "PYUSD-USD", "DAI-USD", "FDUSD-USD"
+            "USDT-USDC", "EURC-EUR", "PYUSD-USD", "DAI-USD", "FDUSD-USD", "USD1-USD",
+            "RLUSD-USD", "USDD-USD", "GUSD-USD", "PAXG-USD", "WAXL-USD", "WBTC-USD", "WETH-USD"
         }
 
         symbols_with_vol = []
@@ -1345,6 +1367,15 @@ def process_cpr_setup(symbol, timeframe="monthly", mode="active"):
         yesterday_c = daily_candles[-2]
         day_before_c = daily_candles[-3]
         
+        # Guard: In crypto, ensure the last candle is active (today or yesterday)
+        if is_crypto:
+            now_utc = datetime.datetime.now(datetime.timezone.utc)
+            today_utc = now_utc.strftime("%Y-%m-%d")
+            yesterday_utc = (now_utc - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+            last_candle_date = today_c.get("date", "")
+            if last_candle_date not in [today_utc, yesterday_utc]:
+                return None
+        
         last_price = today_c['close']
         if last_price < 0.000001: return None
         
@@ -1353,8 +1384,8 @@ def process_cpr_setup(symbol, timeframe="monthly", mode="active"):
         if mode == "developing":
             cpr_target = calculate_cpr_and_pivots(today_c['high'], today_c['low'], today_c['close'], dec)
             cpr_base = calculate_cpr_and_pivots(yesterday_c['high'], yesterday_c['low'], yesterday_c['close'], dec)
-            target_label = f"Developing Tomorrow ({today_c.get('date', '')})"
-            base_label = f"Today ({yesterday_c.get('date', '')})"
+            target_label = f"Tomorrow (Developing)"
+            base_label = f"Today's CPR ({today_c.get('date', '')})"
             trigger_h = round(today_c['high'], dec)
             trigger_l = round(today_c['low'], dec)
             trigger_name_h = "Today High (Buy)"
@@ -1362,8 +1393,8 @@ def process_cpr_setup(symbol, timeframe="monthly", mode="active"):
         else:
             cpr_target = calculate_cpr_and_pivots(yesterday_c['high'], yesterday_c['low'], yesterday_c['close'], dec)
             cpr_base = calculate_cpr_and_pivots(day_before_c['high'], day_before_c['low'], day_before_c['close'], dec)
-            target_label = f"Today ({yesterday_c.get('date', '')})"
-            base_label = f"Yesterday ({day_before_c.get('date', '')})"
+            target_label = f"Today's CPR ({today_c.get('date', '')})"
+            base_label = f"Prior Day CPR ({yesterday_c.get('date', '')})"
             trigger_h = round(yesterday_c['high'], dec)
             trigger_l = round(yesterday_c['low'], dec)
             trigger_name_h = "PD High (Buy)"
@@ -2084,6 +2115,16 @@ DASHBOARD_HTML = """
         let scanData = [];
         let chartInstance = null;
         let currentQuickFilter = 'inside'; // default to 'inside' on Inside Value strategy
+
+        function formatCryptoNum(val) {
+            if (val === null || val === undefined || isNaN(val)) return '-';
+            const num = Number(val);
+            if (num < 0.00001) return num.toFixed(8);
+            if (num < 0.01) return num.toFixed(6);
+            if (num < 1.0) return num.toFixed(4);
+            if (num < 10.0) return num.toFixed(3);
+            return num.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+        }
 
         function updateFilterCounts() {
             if (currentStrategy === 'inside_value') {
@@ -2865,19 +2906,19 @@ DASHBOARD_HTML = """
                                     <div class="text-[10px] text-slate-500 font-sans">${item.symbol} • ${exchangeBadge}</div>
                                 </td>
                                 <td class="py-3.5 px-4">
-                                    <div class="font-bold text-slate-100">${item.ltp.toLocaleString()}</div>
+                                    <div class="font-bold text-slate-100 font-mono">${formatCryptoNum(item.ltp)}</div>
                                     <div class="${chgColor} text-[11px] font-sans font-medium">${chgSign}${item.change} (${chgSign}${item.change_pct}%)</div>
                                 </td>
                                 <td class="py-3.5 px-4 text-[11px]">
-                                    <div class="text-white font-semibold">${item.virgin_date}</div>
+                                    <div class="text-white font-semibold font-mono">${item.virgin_date}</div>
                                     <div class="text-rose-400 font-sans text-[10px] font-medium">${item.days_ago} ${item.days_ago === 1 ? 'day' : 'days'} ago</div>
                                 </td>
                                 <td class="py-3.5 px-4 text-[11px]">
-                                    <div class="text-slate-200 font-semibold"><span class="text-blue-400">${item.curr_cpr.cpr_bot}</span> • <span class="text-purple-400 font-bold">${item.curr_cpr.p}</span> • <span class="text-blue-400">${item.curr_cpr.cpr_top}</span></div>
+                                    <div class="text-slate-200 font-semibold"><span class="text-blue-400 font-mono">${formatCryptoNum(item.curr_cpr.cpr_bot)}</span> • <span class="text-purple-400 font-bold font-mono">${formatCryptoNum(item.curr_cpr.p)}</span> • <span class="text-blue-400 font-mono">${formatCryptoNum(item.curr_cpr.cpr_top)}</span></div>
                                     <div class="text-[10px] text-slate-400 font-sans mt-0.5">Width: ${item.curr_cpr.cpr_width_pct}%</div>
                                 </td>
                                 <td class="py-3.5 px-4 text-[11px]">
-                                    <div class="${distColor} font-bold">${item.dist_pct > 0 ? '+' : ''}${item.dist_pct}%</div>
+                                    <div class="${distColor} font-bold font-mono">${item.dist_pct > 0 ? '+' : ''}${item.dist_pct}%</div>
                                     <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold border ${item.role_badge} font-sans mt-0.5">
                                         ${item.role}
                                     </span>
@@ -2969,7 +3010,7 @@ DASHBOARD_HTML = """
                                     <div class="text-[10px] text-slate-500 font-sans">${item.symbol} • ${exchangeBadge}</div>
                                 </td>
                                 <td class="py-3.5 px-4">
-                                    <div class="font-bold text-slate-100">${item.ltp.toLocaleString()}</div>
+                                    <div class="font-bold text-slate-100 font-mono">${formatCryptoNum(item.ltp)}</div>
                                     <div class="${chgColor} text-[11px] font-sans font-medium">${chgSign}${item.change} (${chgSign}${item.change_pct}%)</div>
                                 </td>
                                 <td class="py-3.5 px-4">
@@ -2979,13 +3020,13 @@ DASHBOARD_HTML = """
                                     <div class="text-[10px] font-sans mt-0.5 ${item.compression_pct > 0 ? 'text-amber-400' : 'text-slate-400'}">${item.compression_pct > 0 ? `-${item.compression_pct}% Compressed` : `+${Math.abs(item.compression_pct)}% Wider`}</div>
                                 </td>
                                 <td class="py-3.5 px-4 text-[11px]">
-                                    <div class="text-slate-200 font-semibold"><span class="text-blue-400 font-mono">${item.curr_cpr.cpr_bot}</span> • <span class="text-purple-400 font-bold font-mono">${item.curr_cpr.p}</span> • <span class="text-blue-400 font-mono">${item.curr_cpr.cpr_top}</span></div>
-                                    <div class="text-[10px] text-slate-400 font-sans mt-0.5">Base CPR: <span class="text-slate-300 font-mono">${item.prev_cpr.cpr_bot} • ${item.prev_cpr.p} • ${item.prev_cpr.cpr_top}</span></div>
+                                    <div class="text-slate-200 font-semibold"><span class="text-blue-400 font-mono">${formatCryptoNum(item.curr_cpr.cpr_bot)}</span> • <span class="text-purple-400 font-bold font-mono">${formatCryptoNum(item.curr_cpr.p)}</span> • <span class="text-blue-400 font-mono">${formatCryptoNum(item.curr_cpr.cpr_top)}</span></div>
+                                    <div class="text-[10px] text-slate-400 font-sans mt-0.5">Base CPR: <span class="text-slate-300 font-mono">${formatCryptoNum(item.prev_cpr.cpr_bot)} • ${formatCryptoNum(item.prev_cpr.p)} • ${formatCryptoNum(item.prev_cpr.cpr_top)}</span></div>
                                     <div class="text-[10px] text-cyan-400 font-sans mt-0.5 font-medium">Width: ${(item.cpr_width_pct !== undefined ? item.cpr_width_pct : item.curr_cpr.cpr_width_pct)}% (${item.compression_pct > 0 ? `-${item.compression_pct}% compressed` : `+${Math.abs(item.compression_pct)}% wider`})</div>
                                 </td>
                                 <td class="py-3.5 px-4 text-[11px]">
-                                    <div><span class="text-slate-400 font-sans">${item.trigger_name_h}:</span> <span class="text-emerald-400 font-bold">${item.pm_high}</span></div>
-                                    <div><span class="text-slate-400 font-sans">${item.trigger_name_l}:</span> <span class="text-rose-400 font-bold">${item.pm_low}</span></div>
+                                    <div><span class="text-slate-400 font-sans">${item.trigger_name_h}:</span> <span class="text-emerald-400 font-bold font-mono">${formatCryptoNum(item.pm_high)}</span></div>
+                                    <div><span class="text-slate-400 font-sans">${item.trigger_name_l}:</span> <span class="text-rose-400 font-bold font-mono">${formatCryptoNum(item.pm_low)}</span></div>
                                 </td>
                                 <td class="py-3.5 px-4 text-[11px]">
                                     ${item.oi_info ? `
@@ -3026,7 +3067,7 @@ DASHBOARD_HTML = """
                                 <div class="text-[10px] text-slate-500 font-sans">${item.symbol}</div>
                             </td>
                             <td class="py-3.5 px-4">
-                                <div class="font-bold text-slate-100">${item.ltp.toLocaleString()}</div>
+                                <div class="font-bold text-slate-100 font-mono">${formatCryptoNum(item.ltp)}</div>
                                 <div class="${chgColor} text-[11px] font-sans font-medium">${chgSign}${item.change} (${chgSign}${item.change_pct}%)</div>
                             </td>
                             <td class="py-3.5 px-4">
@@ -3036,16 +3077,16 @@ DASHBOARD_HTML = """
                                 <div class="${item.position_status.class} text-[10px] font-sans mt-0.5">${item.position_status.text}</div>
                             </td>
                             <td class="py-3.5 px-4 text-[11px]">
-                                <div class="text-slate-200 font-semibold"><span class="text-blue-400">${item.curr_cpr.cpr_bot}</span> • <span class="text-purple-400 font-bold">${item.curr_cpr.p}</span> • <span class="text-blue-400">${item.curr_cpr.cpr_top}</span></div>
+                                <div class="text-slate-200 font-semibold"><span class="text-blue-400 font-mono">${formatCryptoNum(item.curr_cpr.cpr_bot)}</span> • <span class="text-purple-400 font-bold font-mono">${formatCryptoNum(item.curr_cpr.p)}</span> • <span class="text-blue-400 font-mono">${formatCryptoNum(item.curr_cpr.cpr_top)}</span></div>
                                 <div class="text-[10px] text-amber-400 font-sans mt-0.5 font-medium">${item.target_label}</div>
                             </td>
                             <td class="py-3.5 px-4 text-[11px]">
-                                <div class="text-slate-400"><span class="text-slate-500">${item.prev_cpr.cpr_bot}</span> • <span class="text-slate-400">${item.prev_cpr.p}</span> • <span class="text-slate-500">${item.prev_cpr.cpr_top}</span></div>
+                                <div class="text-slate-400 font-mono"><span class="text-slate-500">${formatCryptoNum(item.prev_cpr.cpr_bot)}</span> • <span class="text-slate-400">${formatCryptoNum(item.prev_cpr.p)}</span> • <span class="text-slate-500">${formatCryptoNum(item.prev_cpr.cpr_top)}</span></div>
                                 <div class="text-[10px] text-slate-500 font-sans mt-0.5">${item.base_label}</div>
                             </td>
                             <td class="py-3.5 px-4 text-[11px]">
-                                <div><span class="text-slate-400 font-sans">${item.trigger_name_h}:</span> <span class="text-emerald-400 font-bold">${item.pm_high}</span></div>
-                                <div><span class="text-slate-400 font-sans">${item.trigger_name_l}:</span> <span class="text-rose-400 font-bold">${item.pm_low}</span></div>
+                                <div><span class="text-slate-400 font-sans">${item.trigger_name_h}:</span> <span class="text-emerald-400 font-bold font-mono">${formatCryptoNum(item.pm_high)}</span></div>
+                                <div><span class="text-slate-400 font-sans">${item.trigger_name_l}:</span> <span class="text-rose-400 font-bold font-mono">${formatCryptoNum(item.pm_low)}</span></div>
                             </td>
                             <td class="py-3.5 px-4 text-[11px]">
                                 <div><span class="text-slate-400 font-sans">R1:</span> <span class="text-emerald-400 font-medium">${item.curr_cpr.r1}</span></div>
@@ -3288,8 +3329,13 @@ def api_scan():
                     res = f.result()
                     if res:
                         results.append(res)
-                # Prioritize strict Inside Value setups first, then Near Coils, then others; sorted by compression %
-                results.sort(key=lambda x: (1 if x.get('is_strict') else (0.5 if x.get('relationship') == 'Near Coil (95%+)' else 0), x.get('compression_pct', 0)), reverse=True)
+                # Prioritize strict Inside Value setups first, then Near Coils, then others.
+                # Within each group, rank by 24h Volume / Liquidity (descending) so top-tier liquid coins appear first!
+                results.sort(key=lambda x: (
+                    1 if x.get('is_strict') else (0.5 if x.get('relationship') == 'Near Coil (95%+)' else 0),
+                    min(x.get('market_cap') or 0, 500_000_000),
+                    x.get('compression_pct', 0)
+                ), reverse=True)
         
         return jsonify({
             "strategy": strategy,
