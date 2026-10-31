@@ -643,40 +643,63 @@ def process_cpr_setup(symbol, timeframe="monthly", mode="active"):
 
     is_strict = (top_t <= top_b) and (bot_t >= bot_b)
     tol = p_b * 0.003
-    is_near_coil = (top_t <= (top_b + tol)) and (bot_t >= (bot_b - tol))
-
-    if is_strict:
-        relationship = "Inside Value"
-        rel_badge = "bg-purple-500/20 text-purple-300 border-purple-500/40"
-        rel_icon = "⚡"
-    elif is_near_coil:
-        relationship = "Near Coil (95%+)"
-        rel_badge = "bg-cyan-500/20 text-cyan-300 border-cyan-500/40"
-        rel_icon = "🌀"
-    elif bot_t > top_b:
-        relationship = "Higher Value"
-        rel_badge = "bg-emerald-500/20 text-emerald-300 border-emerald-500/40"
-        rel_icon = "🚀"
-    elif top_t < bot_b:
-        relationship = "Lower Value"
-        rel_badge = "bg-rose-500/20 text-rose-300 border-rose-500/40"
-        rel_icon = "🐻"
-    elif top_t >= top_b and bot_t <= bot_b:
-        relationship = "Outside Value"
-        rel_badge = "bg-orange-500/20 text-orange-300 border-orange-500/40"
-        rel_icon = "💥"
-    elif bot_t > bot_b:
-        relationship = "Overlap Higher"
-        rel_badge = "bg-teal-500/20 text-teal-300 border-teal-500/40"
-        rel_icon = "↗️"
-    else:
-        relationship = "Overlap Lower"
-        rel_badge = "bg-amber-500/20 text-amber-300 border-amber-500/40"
-        rel_icon = "↘️"
+    is_near_coil = (not is_strict) and (top_t <= (top_b + tol)) and (bot_t >= (bot_b - tol))
+    is_inside = is_strict or is_near_coil
 
     width_target = cpr_target['cpr_width_pct']
     width_base = cpr_base['cpr_width_pct']
     compression_pct = round(((1.0 - (width_target / width_base)) * 100.0), 1) if width_base > 0 else 0.0
+
+    # Narrow CPR Thresholds (Frank Ochoa Framework)
+    if timeframe == "daily":
+        narrow_width_threshold = 0.40
+    elif timeframe == "monthly":
+        narrow_width_threshold = 3.50
+    else: # quarterly
+        narrow_width_threshold = 4.50
+
+    is_narrow = (width_target <= narrow_width_threshold) or (compression_pct >= 60.0)
+
+    # Holy Grail Combo: Inside Value AND Narrow CPR
+    is_combo = is_inside and is_narrow
+
+    # STRICT FILTER: ONLY keep Inside Value, Narrow CPR, and Inside+Narrow CPR!
+    # Exclude all non-compression trend noise (Higher Value, Lower Value, Outside Value, etc.)
+    if not (is_combo or is_inside or is_narrow):
+        return None
+
+    if is_combo:
+        relationship = "Inside + Narrow CPR"
+        rel_badge = "bg-gradient-to-r from-orange-500/25 to-purple-500/25 text-amber-300 border-amber-500/50 shadow-sm"
+        rel_icon = "🔥"
+        priority = 3
+        quality_tag = {"text": "🔥 Holy Grail: Inside + Narrow", "badge": "bg-gradient-to-r from-amber-500/20 to-purple-500/20 text-amber-300 border-amber-500/40"}
+    elif is_strict:
+        relationship = "Inside Value"
+        rel_badge = "bg-purple-500/20 text-purple-300 border-purple-500/40"
+        rel_icon = "⚡"
+        priority = 2
+        if compression_pct >= 70:
+            quality_tag = {"text": "⚡ Mega Coil (>70%)", "badge": "bg-purple-500/20 text-purple-300 border-purple-500/40"}
+        elif compression_pct >= 40:
+            quality_tag = {"text": "⚡ High Compression (>40%)", "badge": "bg-indigo-500/20 text-indigo-300 border-indigo-500/40"}
+        else:
+            quality_tag = {"text": "⚡ Inside Value", "badge": "bg-purple-500/20 text-purple-300 border-purple-500/40"}
+    elif is_near_coil:
+        relationship = "Near-Coil Inside"
+        rel_badge = "bg-cyan-500/20 text-cyan-300 border-cyan-500/40"
+        rel_icon = "🌀"
+        priority = 2
+        quality_tag = {"text": "🌀 Near-Coil Inside", "badge": "bg-cyan-500/20 text-cyan-300 border-cyan-500/40"}
+    else: # is_narrow
+        relationship = "Narrow CPR"
+        rel_badge = "bg-emerald-500/20 text-emerald-300 border-emerald-500/40"
+        rel_icon = "🎯"
+        priority = 1
+        if width_target <= (narrow_width_threshold * 0.5):
+            quality_tag = {"text": "🎯 Razor-Thin CPR", "badge": "bg-emerald-500/20 text-emerald-300 border-emerald-500/40"}
+        else:
+            quality_tag = {"text": "🎯 Narrow CPR", "badge": "bg-emerald-500/20 text-emerald-300 border-emerald-500/40"}
 
     ltp = round(last_price, dec)
     chg = round(ltp - base_prev_close, dec)
@@ -688,16 +711,6 @@ def process_cpr_setup(symbol, timeframe="monthly", mode="active"):
         position_status = {"text": "Below CPR (Bearish Bias)", "class": "text-rose-400 font-semibold"}
     else:
         position_status = {"text": "Inside CPR (Coiling in Value)", "class": "text-amber-400 font-semibold"}
-
-    if is_strict:
-        if compression_pct >= 70:
-            quality_tag = {"text": "⚡ Mega Coil (>70%)", "badge": "bg-purple-500/20 text-purple-300 border-purple-500/40"}
-        elif compression_pct >= 40:
-            quality_tag = {"text": "🔥 High Compression (>40%)", "badge": "bg-amber-500/20 text-amber-300 border-amber-500/40"}
-        else:
-            quality_tag = {"text": "🟡 Strict Inside Value", "badge": "bg-yellow-500/20 text-yellow-300 border-yellow-500/40"}
-    else:
-        quality_tag = {"text": f"{rel_icon} {relationship}", "badge": rel_badge}
 
     clean_symbol = symbol.replace("USDT", "").replace("USDC", "").replace("-USD", "")
     
@@ -722,8 +735,11 @@ def process_cpr_setup(symbol, timeframe="monthly", mode="active"):
         "relationship": relationship,
         "rel_badge": rel_badge,
         "rel_icon": rel_icon,
-        "is_inside_value": is_strict,
+        "is_combo": is_combo,
+        "is_inside_value": is_inside,
         "is_strict": is_strict,
+        "is_narrow": is_narrow,
+        "priority": priority,
         "cpr_width_pct": width_target,
         "timeframe": timeframe,
         "mode": mode,
@@ -750,7 +766,7 @@ DASHBOARD_HTML = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Pivot Boss CPR Terminal • Crypto Inside Value Engine</title>
+    <title>Pivot Boss CPR Terminal • Volatility Compression Breakout Engine</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
     <script>
@@ -791,10 +807,10 @@ DASHBOARD_HTML = """
                 </div>
                 <div>
                     <h1 class="text-lg font-bold tracking-tight bg-gradient-to-r from-white via-amber-200 to-orange-400 bg-clip-text text-transparent flex items-center gap-2">
-                        PIVOT BOSS CRYPTO TERMINAL
-                        <span id="header-mode-badge" class="px-2 py-0.5 rounded text-[10px] bg-purple-500/20 text-purple-300 font-mono font-medium border border-purple-500/30">INSIDE VALUE COMPRESSION</span>
+                        PIVOT BOSS <span class="text-amber-400">COMPRESSION ENGINE</span>
+                        <span id="header-mode-badge" class="px-2 py-0.5 rounded text-[10px] bg-amber-500/20 text-amber-300 font-mono font-medium border border-amber-500/30">DAILY • DEVELOPING</span>
                     </h1>
-                    <p class="text-xs text-slate-400">Institutional 2-Day Pivot Range Compression & Breakout Engine (Binance & Coinbase Official APIs)</p>
+                    <p class="text-xs text-slate-400">Institutional Inside Value, Narrow CPR & Holy Grail Breakout Scanner (Binance & Coinbase Official APIs)</p>
                 </div>
             </div>
 
@@ -888,12 +904,12 @@ DASHBOARD_HTML = """
                     ⚡ Verified Inside Value CPRs & 2-Day Trends
                 </span>
                 <div class="flex items-center gap-2">
-                    <!-- Quick Filter Pills (Frank Ochoa Framework) -->
+                    <!-- Quick Filter Pills (Compression Master Framework) -->
                     <div id="quick-filters" class="flex flex-wrap items-center gap-1 bg-navy-950 p-1 rounded-xl border border-navy-700 text-[11px]">
-                        <button onclick="setQuickFilter('inside')" id="qf-inside" class="px-2.5 py-1 rounded-lg bg-amber-400 text-black font-bold shadow">⚡ Inside Value</button>
-                        <button onclick="setQuickFilter('all')" id="qf-all" class="px-2.5 py-1 rounded-lg text-slate-400 hover:text-white">All 2-Day Trends</button>
-                        <button onclick="setQuickFilter('higher')" id="qf-higher" class="px-2.5 py-1 rounded-lg text-slate-400 hover:text-white">🚀 Higher Value</button>
-                        <button onclick="setQuickFilter('lower')" id="qf-lower" class="px-2.5 py-1 rounded-lg text-slate-400 hover:text-white">🐻 Lower Value</button>
+                        <button onclick="setQuickFilter('combo')" id="qf-combo" class="px-2.5 py-1 rounded-lg text-slate-400 hover:text-white">🔥 Inside + Narrow</button>
+                        <button onclick="setQuickFilter('inside')" id="qf-inside" class="px-2.5 py-1 rounded-lg text-slate-400 hover:text-white">⚡ Inside Value</button>
+                        <button onclick="setQuickFilter('narrow')" id="qf-narrow" class="px-2.5 py-1 rounded-lg text-slate-400 hover:text-white">🎯 Narrow CPR</button>
+                        <button onclick="setQuickFilter('all')" id="qf-all" class="px-2.5 py-1 rounded-lg bg-amber-400 text-black font-bold shadow">🌐 All Setups</button>
                         <button onclick="setQuickFilter('megacoil')" id="qf-megacoil" class="px-2.5 py-1 rounded-lg text-slate-400 hover:text-white">💥 MegaCoil (&gt;70%)</button>
                     </div>
                     <input type="text" id="search-input" onkeyup="renderTable()" placeholder="Search symbol..." class="bg-navy-950 border border-navy-700 text-slate-200 text-xs rounded-xl px-3.5 py-1.5 focus:outline-none focus:border-amber-400 w-40 transition shadow-inner">
@@ -906,7 +922,7 @@ DASHBOARD_HTML = """
                         <tr class="bg-navy-950/90 border-b border-navy-700 text-slate-400 font-semibold tracking-wider uppercase text-[11px]">
                             <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('market_cap')">Coin Pair & 24h Vol ↕</th>
                             <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('ltp')">Current LTP & Chg ↕</th>
-                            <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('compression_pct')">Compression % & Setup ↕</th>
+                            <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('priority')">Setup & Compression ↕</th>
                             <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('cpr_width_pct')">Target CPR Band (BC • P • TC) ↕</th>
                             <th class="py-3.5 px-4">Base CPR Band (BC • P • TC)</th>
                             <th class="py-3.5 px-4">Breakout Triggers</th>
@@ -918,7 +934,7 @@ DASHBOARD_HTML = """
                         <tr>
                             <td colspan="8" class="text-center py-16 text-slate-400 font-sans">
                                 <div class="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-amber-400 mb-3"></div>
-                                <p>Scanning crypto universe for Inside Value CPRs & 2-Day Trends...</p>
+                                <p>Scanning crypto universe for Inside Value & Narrow CPR Compression Setups...</p>
                             </td>
                         </tr>
                     </tbody>
@@ -958,10 +974,10 @@ DASHBOARD_HTML = """
                     <span class="text-2xl">📖</span>
                     <div>
                         <h2 class="text-base font-bold text-white tracking-tight flex items-center gap-2">
-                            PIVOT BOSS • CRYPTO INSIDE VALUE CPR PLAYBOOK
+                            PIVOT BOSS • VOLATILITY COMPRESSION PLAYBOOK
                             <span class="px-2 py-0.5 rounded text-[10px] bg-amber-500/20 text-amber-300 font-mono border border-amber-500/40">FRANK OCHOA FRAMEWORK</span>
                         </h2>
-                        <p class="text-xs text-slate-400">Mastering institutional volatility compression, 2-day pivot relationships, and breakout execution in crypto</p>
+                        <p class="text-xs text-slate-400">Mastering Inside Value CPR, Narrow CPR, and Holy Grail Double Compression in Crypto</p>
                     </div>
                 </div>
                 <button onclick="closePlaybookModal()" class="text-slate-400 hover:text-white p-2 rounded-lg hover:bg-navy-800 transition">
@@ -973,29 +989,29 @@ DASHBOARD_HTML = """
             <div class="p-6 overflow-y-auto space-y-6 text-xs text-slate-300 leading-relaxed font-sans">
                 <!-- Grid 1: The Core Metrics -->
                 <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    <div class="p-4 rounded-xl bg-navy-950/70 border border-navy-700">
+                    <div class="p-4 rounded-xl bg-navy-950/70 border border-amber-500/40 shadow-sm">
+                        <div class="text-amber-400 font-bold text-sm mb-1.5 flex items-center gap-1.5">
+                            <span>🔥 Inside + Narrow CPR (The Holy Grail)</span>
+                        </div>
+                        <p class="text-slate-300 leading-normal">Satisfies <strong class="text-white">BOTH conditions simultaneously</strong>: Target CPR is strictly engulfed inside Base CPR (Inside Value) AND target CPR width is razor-thin (&le; 0.40% daily or &ge; 60% compression). Maximum institutional coiling energy.</p>
+                        <div class="mt-2 text-[11px] text-amber-300 font-medium">• Highest breakout win-rate & violent multi-candle follow-through</div>
+                        <div class="text-[11px] text-orange-300 font-medium">• Triggers: Decisive breakout above Today High or below Today Low</div>
+                    </div>
+                    <div class="p-4 rounded-xl bg-navy-950/70 border border-purple-500/40 shadow-sm">
                         <div class="text-purple-400 font-bold text-sm mb-1.5 flex items-center gap-1.5">
                             <span>⚡ Inside Value CPR (Engulfment)</span>
                         </div>
-                        <p class="text-slate-400 leading-normal">The upcoming CPR is <strong class="text-white">completely engulfed</strong> inside the prior period CPR (TC &le; Base TC and BC &ge; Base BC). Extreme volatility compression coiling energy before an explosive directional breakout.</p>
-                        <div class="mt-2 text-[11px] text-purple-300 font-medium">• High-velocity multi-candle trend expansion imminent</div>
-                        <div class="text-[11px] text-amber-300 font-medium">• Triggers: Breakout above Prior High or below Prior Low</div>
+                        <p class="text-slate-300 leading-normal">The upcoming CPR is <strong class="text-white">completely engulfed</strong> inside the prior period CPR (TC &le; Base TC and BC &ge; Base BC). Range contraction indicates commercial participants coiling energy before an explosive directional impulse.</p>
+                        <div class="mt-2 text-[11px] text-purple-300 font-medium">• Classic Frank Ochoa compression setup</div>
+                        <div class="text-[11px] text-slate-400 font-medium">• Triggers: 15m close above Prior High (Long) or below Prior Low (Short)</div>
                     </div>
-                    <div class="p-4 rounded-xl bg-navy-950/70 border border-navy-700">
+                    <div class="p-4 rounded-xl bg-navy-950/70 border border-emerald-500/40 shadow-sm">
                         <div class="text-emerald-400 font-bold text-sm mb-1.5 flex items-center gap-1.5">
-                            <span>🚀 Higher Value (Bullish Continuation)</span>
+                            <span>🎯 Narrow CPR (Width Compression)</span>
                         </div>
-                        <p class="text-slate-400 leading-normal">The target Bottom Central (BC) is strictly <strong class="text-white">higher than the base Top Central (TC)</strong>. Market participants have accepted higher value, signaling aggressive accumulation.</p>
-                        <div class="mt-2 text-[11px] text-emerald-300 font-medium">• Look for morning pullbacks into Central Pivot (P) / BC</div>
-                        <div class="text-[11px] text-slate-400 font-medium">• Avoid shorting; focus strictly on bullish trend continuation</div>
-                    </div>
-                    <div class="p-4 rounded-xl bg-navy-950/70 border border-navy-700">
-                        <div class="text-rose-400 font-bold text-sm mb-1.5 flex items-center gap-1.5">
-                            <span>🐻 Lower Value (Bearish Continuation)</span>
-                        </div>
-                        <p class="text-slate-400 leading-normal">The target Top Central (TC) is strictly <strong class="text-white">lower than the base Bottom Central (BC)</strong>. Value is descending, confirming that institutions are distributing into rallies.</p>
-                        <div class="mt-2 text-[11px] text-rose-300 font-medium">• Look for morning bounces into Central Pivot (P) / TC to short</div>
-                        <div class="text-[11px] text-slate-400 font-medium">• Targets: S1, S2, and prior swing lows</div>
+                        <p class="text-slate-300 leading-normal">The CPR band is <strong class="text-white">exceptionally narrow relative to price</strong> (&le; 0.40% daily / &le; 3.5% monthly / &ge; 60% compression). In Pivot Boss principles, narrow CPR days foreshadow massive trending expansion days.</p>
+                        <div class="mt-2 text-[11px] text-emerald-300 font-medium">• Shifts market from sideways chop into high-velocity trend</div>
+                        <div class="text-[11px] text-slate-400 font-medium">• Targets: Camarilla H4, Pivot R2/R3 extensions</div>
                     </div>
                 </div>
 
@@ -1008,42 +1024,42 @@ DASHBOARD_HTML = """
                     <!-- Strategy 1 -->
                     <div class="p-4 rounded-lg bg-navy-900 border border-navy-700/80 space-y-2">
                         <div class="flex items-center justify-between font-bold text-slate-200">
-                            <span class="text-amber-400 text-sm">Setup 1: Inside Value Breakout Expansion (Trend Initiation)</span>
-                            <span class="text-[10px] bg-amber-500/20 text-amber-300 px-2 py-0.5 rounded border border-amber-500/40">Win Rate: ~75%</span>
+                            <span class="text-amber-400 text-sm">Setup 1: Holy Grail Inside + Narrow Double Breakout</span>
+                            <span class="text-[10px] bg-amber-500/20 text-amber-300 px-2 py-0.5 rounded border border-amber-500/40">Win Rate: ~80%</span>
                         </div>
-                        <p class="text-slate-300">When CPR width compresses dramatically inside the prior CPR, price is coiling like a spring. Once price breaks the prior boundary, forced stops trigger rapid directional momentum.</p>
+                        <p class="text-slate-300">When an asset meets both Inside Value engulfment AND Narrow CPR width, energy compression is at its theoretical peak. Price cannot remain in this tight state and expands violently upon the breakout of the prior bar's extremes.</p>
                         <div class="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-2 text-[11px]">
-                            <div class="p-2.5 rounded bg-navy-950 border border-navy-800"><strong class="text-white">Long Trigger:</strong> 15m candle close above Today High / PDH. <br><strong class="text-white">Short Trigger:</strong> 15m candle close below Today Low / PDL.</div>
-                            <div class="p-2.5 rounded bg-navy-950 border border-navy-800"><strong class="text-white">Stop Loss:</strong> Back inside Central Pivot (P) or opposite trigger.</div>
-                            <div class="p-2.5 rounded bg-navy-950 border border-navy-800"><strong class="text-white">Take Profit:</strong> Camarilla H4, Pivot R1, R2. Expected move: 1:3+ Risk/Reward.</div>
+                            <div class="p-2.5 rounded bg-navy-950 border border-navy-800"><strong class="text-white">Entry Trigger:</strong> 15m candle close outside Today High (Long) or Today Low (Short).</div>
+                            <div class="p-2.5 rounded bg-navy-950 border border-navy-800"><strong class="text-white">Stop Loss:</strong> Back inside Central Pivot (P) or opposite CPR boundary.</div>
+                            <div class="p-2.5 rounded bg-navy-950 border border-navy-800"><strong class="text-white">Take Profit:</strong> Camarilla H4 / L4, R2, R3 extensions (1:3+ R:R minimum).</div>
                         </div>
                     </div>
 
                     <!-- Strategy 2 -->
                     <div class="p-4 rounded-lg bg-navy-900 border border-navy-700/80 space-y-2">
                         <div class="flex items-center justify-between font-bold text-slate-200">
-                            <span class="text-purple-400 text-sm">Setup 2: MegaCoil (>70% Compression) Super-Trend Expansion</span>
-                            <span class="text-[10px] bg-purple-500/20 text-purple-300 px-2 py-0.5 rounded border border-purple-500/40">Massive Expansion</span>
+                            <span class="text-purple-400 text-sm">Setup 2: Inside Value Breakout Expansion</span>
+                            <span class="text-[10px] bg-purple-500/20 text-purple-300 px-2 py-0.5 rounded border border-purple-500/40">Directional Trend Initiation</span>
                         </div>
-                        <p class="text-slate-300">Assets coiling with over 70% CPR width compression relative to the prior period are in extreme energy storage. Multi-timeframe confluence (Daily inside Monthly) produces multi-day institutional runs.</p>
+                        <p class="text-slate-300">When the target CPR is fully enveloped inside base CPR, market participants are accepting value inside yesterday's range. Once the boundary is pierced on volume, forced liquidity triggers rapid trend initiation.</p>
                         <div class="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-2 text-[11px]">
-                            <div class="p-2.5 rounded bg-navy-950 border border-navy-800"><strong class="text-white">Entry:</strong> Confirm breakout on volume > 1.5x 20-period moving average.</div>
-                            <div class="p-2.5 rounded bg-navy-950 border border-navy-800"><strong class="text-white">Trailing Stop:</strong> Trail behind 1-hour candle lows (for longs) or candle highs (for shorts).</div>
-                            <div class="p-2.5 rounded bg-navy-950 border border-navy-800"><strong class="text-white">Target:</strong> Hold partial runners for multi-session expansion into macro weekly/monthly pivots.</div>
+                            <div class="p-2.5 rounded bg-navy-950 border border-navy-800"><strong class="text-white">Entry Trigger:</strong> Breakout above PDH/Today High with volume expansion > 1.3x 20MA.</div>
+                            <div class="p-2.5 rounded bg-navy-950 border border-navy-800"><strong class="text-white">Stop Loss:</strong> 0.2% behind Central Pivot (P).</div>
+                            <div class="p-2.5 rounded bg-navy-950 border border-navy-800"><strong class="text-white">Target:</strong> Pivot R1, R2, and Prior Swing High.</div>
                         </div>
                     </div>
 
                     <!-- Strategy 3 -->
                     <div class="p-4 rounded-lg bg-navy-900 border border-navy-700/80 space-y-2">
                         <div class="flex items-center justify-between font-bold text-slate-200">
-                            <span class="text-emerald-400 text-sm">Setup 3: Higher / Lower Value Pullback Continuation</span>
-                            <span class="text-[10px] bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded border border-emerald-500/40">Trend Following</span>
+                            <span class="text-emerald-400 text-sm">Setup 3: Narrow CPR Trending Day / Session</span>
+                            <span class="text-[10px] bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded border border-emerald-500/40">High-Velocity Trend Day</span>
                         </div>
-                        <p class="text-slate-300">In Higher Value relationships, price often pulls back during the morning session to test the Central Pivot Range. A clean rejection candle at BC or P offers an optimal low-risk trend-following entry.</p>
+                        <p class="text-slate-300">Narrow CPR occurs when the preceding day had a wide consolidation or multi-day range contraction. In crypto, narrow CPR days typically exhibit one-way trend behavior throughout the UTC session.</p>
                         <div class="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-2 text-[11px]">
-                            <div class="p-2.5 rounded bg-navy-950 border border-navy-800"><strong class="text-white">Long Entry:</strong> Bullish hammer or engulfing candle at P or BC.</div>
-                            <div class="p-2.5 rounded bg-navy-950 border border-navy-800"><strong class="text-white">Stop Loss:</strong> 0.3% below the Bottom Central (BC) line.</div>
-                            <div class="p-2.5 rounded bg-navy-950 border border-navy-800"><strong class="text-white">Take Profit:</strong> Prior High, R1, or R2.</div>
+                            <div class="p-2.5 rounded bg-navy-950 border border-navy-800"><strong class="text-white">Entry:</strong> First 15m candle close above TC (Bullish) or below BC (Bearish).</div>
+                            <div class="p-2.5 rounded bg-navy-950 border border-navy-800"><strong class="text-white">Trailing Stop:</strong> Trail behind 1-hour candle lows (longs) or highs (shorts).</div>
+                            <div class="p-2.5 rounded bg-navy-950 border border-navy-800"><strong class="text-white">Take Profit:</strong> Let winners run into macro weekly / monthly pivot levels.</div>
                         </div>
                     </div>
                 </div>
@@ -1055,10 +1071,10 @@ DASHBOARD_HTML = """
                             <span>📋 5-Minute Screening Routine</span>
                         </div>
                         <ol class="list-decimal list-inside space-y-1 text-slate-400">
-                            <li><strong class="text-white">Check 🔮 Developing mode:</strong> See what coins are coiling for tomorrow or next month before the UTC close.</li>
-                            <li><strong class="text-white">Click ⚡ Inside Value:</strong> Pinpoint assets with strict inside value compression.</li>
-                            <li><strong class="text-white">Check 💥 MegaCoil:</strong> Identify candidates with &gt; 70% compression for massive expansion potential.</li>
-                            <li><strong class="text-white">Launch TV ↗:</strong> Open the selected coin directly in TradingView to fine-tune entry timing on the 5m/15m chart.</li>
+                            <li><strong class="text-white">Check 🔮 Developing mode:</strong> Spot setups coiling for tomorrow or next month before UTC daily close.</li>
+                            <li><strong class="text-white">Filter 🔥 Inside + Narrow:</strong> Prioritize double-compression Holy Grail candidates.</li>
+                            <li><strong class="text-white">Check ⚡ Inside Value & 🎯 Narrow CPR:</strong> Identify pure value engulfment or razor-thin width setups.</li>
+                            <li><strong class="text-white">Launch TV ↗:</strong> Open in TradingView to set alerts right at the trigger levels.</li>
                         </ol>
                     </div>
 
@@ -1067,9 +1083,9 @@ DASHBOARD_HTML = """
                             <span>🛡️ Golden Risk Management Rules</span>
                         </div>
                         <ul class="space-y-1 text-slate-400">
-                            <li><strong class="text-white">Maximum 1% - 1.5% Risk:</strong> Never risk more than 1.5% of total portfolio on an individual altcoin position.</li>
-                            <li><strong class="text-white">Respect Breakeven:</strong> Once price reaches 1.5R or tests S1/R1, immediately move Stop Loss to Breakeven.</li>
-                            <li><strong class="text-white">Never Trade Against Trend:</strong> If market forms Lower Value, take only sell-side setups. If Higher Value, take only buy-side setups.</li>
+                            <li><strong class="text-white">Maximum 1% - 1.5% Risk:</strong> Never risk more than 1.5% of total capital on any single altcoin trade.</li>
+                            <li><strong class="text-white">Respect Breakeven:</strong> Once price reaches 1.5R or breaks R1/S1, move Stop Loss to entry price.</li>
+                            <li><strong class="text-white">Let Compression Expand:</strong> Compression precedes expansion; never exit prematurely before targets.</li>
                         </ul>
                     </div>
                 </div>
@@ -1088,10 +1104,10 @@ DASHBOARD_HTML = """
         let currentMode = 'developing';
         let currentMarket = 'crypto_all';
         let currentMinMC = 0; // 0 for all liquid pairs
-        let currentSort = { column: 'compression_pct', ascending: false };
+        let currentSort = { column: 'priority', ascending: false };
         let scanData = [];
         let chartInstance = null;
-        let currentQuickFilter = 'inside'; // default to 'inside'
+        let currentQuickFilter = 'all'; // default to 'all' so users see everything right away
 
         function formatCryptoNum(val) {
             if (val === null || val === undefined || isNaN(val)) return '-';
@@ -1104,34 +1120,29 @@ DASHBOARD_HTML = """
         }
 
         function updateFilterCounts() {
-            const strictCount = scanData.filter(i => i.is_strict || i.relationship === 'Inside Value').length;
-            const nearCount = scanData.filter(i => i.relationship === 'Near Coil (95%+)').length;
-            const higherCount = scanData.filter(i => i.relationship === 'Higher Value').length;
-            const lowerCount = scanData.filter(i => i.relationship === 'Lower Value').length;
+            const comboCount = scanData.filter(i => i.is_combo || i.relationship === 'Inside + Narrow CPR').length;
+            const insideCount = scanData.filter(i => i.is_inside_value || i.is_strict || i.relationship === 'Inside Value' || i.relationship === 'Near-Coil Inside' || i.relationship === 'Inside + Narrow CPR').length;
+            const narrowCount = scanData.filter(i => i.is_narrow || i.relationship === 'Narrow CPR' || i.relationship === 'Inside + Narrow CPR').length;
             const megaCount = scanData.filter(i => (i.compression_pct || 0) >= 70).length;
             
+            const qfCombo = document.getElementById('qf-combo');
+            if (qfCombo) qfCombo.innerHTML = `🔥 Inside + Narrow (${comboCount})`;
+
             const qfInside = document.getElementById('qf-inside');
-            if (qfInside) {
-                if (strictCount > 0) {
-                    qfInside.innerHTML = `⚡ Inside Value (${strictCount})`;
-                } else if (nearCount > 0) {
-                    qfInside.innerHTML = `🌀 Near Coil (${nearCount})`;
-                } else {
-                    qfInside.innerHTML = `⚡ Inside Value (0)`;
-                }
-            }
+            if (qfInside) qfInside.innerHTML = `⚡ Inside Value (${insideCount})`;
+
+            const qfNarrow = document.getElementById('qf-narrow');
+            if (qfNarrow) qfNarrow.innerHTML = `🎯 Narrow CPR (${narrowCount})`;
+
             const qfAll = document.getElementById('qf-all');
-            if (qfAll) qfAll.innerHTML = `All 2-Day Trends (${scanData.length})`;
-            const qfHigher = document.getElementById('qf-higher');
-            if (qfHigher) qfHigher.innerHTML = `🚀 Higher Value (${higherCount})`;
-            const qfLower = document.getElementById('qf-lower');
-            if (qfLower) qfLower.innerHTML = `🐻 Lower Value (${lowerCount})`;
+            if (qfAll) qfAll.innerHTML = `🌐 All Setups (${scanData.length})`;
+
             const qfMega = document.getElementById('qf-megacoil');
             if (qfMega) qfMega.innerHTML = `💥 MegaCoil (${megaCount})`;
         }
 
         function syncQuickFilterUI() {
-            ['inside', 'all', 'higher', 'lower', 'megacoil'].forEach(id => {
+            ['combo', 'inside', 'narrow', 'all', 'megacoil'].forEach(id => {
                 const btn = document.getElementById(`qf-${id}`);
                 if (btn) {
                     if (id === currentQuickFilter) {
@@ -1211,41 +1222,31 @@ DASHBOARD_HTML = """
             bannerCard.className = 'p-4 rounded-2xl bg-gradient-to-r from-amber-950/40 via-navy-900 to-navy-900 border border-amber-500/30 flex flex-col md:flex-row items-start md:items-center justify-between gap-4 shadow-lg';
             bannerIcon.innerText = '🎯';
             bannerTitle.className = 'text-sm font-bold text-amber-300';
-            bannerTitle.innerText = `${tfName} ${modeName} Inside Value CPR Setup:`;
-            if (currentTimeframe === 'quarterly') {
-                bannerDesc.innerHTML = 'Quarterly Inside Value CPRs represent <strong>multi-month macro volatility compression</strong>. Breakouts above PQH/QTD High or breakdowns below PQL/QTD Low trigger massive institutional trend expansions.';
-            } else {
-                bannerDesc.innerHTML = 'These assets are in <strong>verified volatility compression</strong>. Trade breakouts above PMH/Today High or breakdowns below PML/Today Low.';
-            }
-            tableTitle.innerText = `🔥 Verified ${tfName} ${modeName} Inside Value Setups`;
-            tableTitle.className = 'text-xs font-bold uppercase tracking-wider text-amber-400 flex items-center gap-2';
+            bannerTitle.innerText = `${tfName} ${modeName} Volatility Compression Breakout Engine:`;
 
             const isCoinbase = currentMarket === 'crypto_coinbase';
             const exchangeName = isCoinbase ? 'Coinbase' : 'Binance';
-            const totalLabel = isCoinbase ? '400+ Pairs' : '700+ Pairs';
-            const volLabel = currentMinMC >= 1000000 ? `$${(currentMinMC/1e6).toFixed(0)}M` : (currentMinMC > 0 ? `$${currentMinMC}` : 'All');
             
-            if (currentQuickFilter === 'inside') {
-                const hasStrict = scanData.some(i => i.is_strict || i.relationship === 'Inside Value');
-                if (hasStrict) {
-                    tableTitle.innerText = `⚡ Verified Strict Inside Value CPRs (${exchangeName} • ${tfName} ${modeName})`;
-                    bannerTitle.innerText = `${tfName} ${modeName} Strict Inside Value CPR Setup:`;
-                    bannerDesc.innerHTML = `These assets are in <strong>verified volatility compression</strong> (Pivot Range completely inside prior Pivot Range). Breakouts above Upper Boundary/Today High or breakdowns below Lower Boundary/Today Low trigger violent expansions.`;
-                } else {
-                    tableTitle.innerText = `🌀 95%+ Near-Coil CPRs (${exchangeName} • ${tfName} ${modeName})`;
-                    bannerTitle.innerText = `${tfName} ${modeName} Near-Coil Setups (0 Strict Inside Today):`;
-                    bannerDesc.innerHTML = `Due to yesterday's trend day, 0 coins formed 100% strict inside value. Showing <strong>closest 95%+ Near-Coil candidates</strong> coiling within 0.3% of prior CPR.`;
-                }
-            } else if (currentQuickFilter === 'all') {
-                tableTitle.innerText = `📊 ${exchangeName} ${tfName} ${modeName} - All 2-Day Relationships`;
-                bannerTitle.innerText = `Two-Day Pivot Range Master Framework (${exchangeName}):`;
-                bannerDesc.innerHTML = `Tracking all 7 Frank Ochoa Two-Day Relationships (Inside Value, Outside Value, Higher Value, Lower Value, Overlap Higher, Overlap Lower).`;
-            } else if (currentQuickFilter === 'higher') {
-                tableTitle.innerText = `🚀 ${exchangeName} Higher Value Bullish Continuations`;
-            } else if (currentQuickFilter === 'lower') {
-                tableTitle.innerText = `🐻 ${exchangeName} Lower Value Bearish Continuations`;
+            if (currentQuickFilter === 'combo') {
+                tableTitle.innerText = `🔥 Holy Grail Double Compression: Inside + Narrow CPRs (${exchangeName} • ${tfName} ${modeName})`;
+                bannerTitle.innerText = `${tfName} ${modeName} Inside + Narrow CPR (Holy Grail):`;
+                bannerDesc.innerHTML = `These crypto assets satisfy <strong>BOTH Inside Value engulfment AND Narrow CPR width</strong>. Maximum institutional coiling energy; violent multi-candle breakout imminent.`;
+            } else if (currentQuickFilter === 'inside') {
+                tableTitle.innerText = `⚡ Inside Value Compression CPRs (${exchangeName} • ${tfName} ${modeName})`;
+                bannerTitle.innerText = `${tfName} ${modeName} Inside Value Compression:`;
+                bannerDesc.innerHTML = `Target CPR is <strong>strictly engulfed</strong> inside the base CPR. Trade breakouts above the Upper Trigger or breakdowns below the Lower Trigger.`;
+            } else if (currentQuickFilter === 'narrow') {
+                tableTitle.innerText = `🎯 Razor-Thin Narrow CPR Breakouts (${exchangeName} • ${tfName} ${modeName})`;
+                bannerTitle.innerText = `${tfName} ${modeName} Narrow CPR Setup:`;
+                bannerDesc.innerHTML = `Exceptionally tight CPR band indicating extreme prior compression (Frank Ochoa framework). High probability of trending market behavior and violent directional expansion.`;
             } else if (currentQuickFilter === 'megacoil') {
-                tableTitle.innerText = `💥 ${exchangeName} MegaCoil Setups (>70% Compression)`;
+                tableTitle.innerText = `💥 MegaCoil Extreme Compression (>70%) (${exchangeName} • ${tfName} ${modeName})`;
+                bannerTitle.innerText = `${tfName} ${modeName} MegaCoil Extreme Compression (>70%):`;
+                bannerDesc.innerHTML = `Extreme volatility compression tier. Energy coiling over 70% tighter than prior period. Prepare for aggressive directional trend continuation.`;
+            } else {
+                tableTitle.innerText = `⚡ Verified Compression Terminal: Inside Value • Narrow CPR • Combos (${exchangeName} • ${tfName} ${modeName})`;
+                bannerTitle.innerText = `${tfName} ${modeName} Volatility Compression Breakout Engine:`;
+                bannerDesc.innerHTML = `Showing verified <strong>Inside Value CPRs</strong>, <strong>Narrow CPRs</strong>, and <strong>Holy Grail Double Combos</strong>. All non-compression noise has been filtered out.`;
             }
 
             // Market selector styles
@@ -1343,19 +1344,13 @@ DASHBOARD_HTML = """
                     return false;
                 }
                 if (currentQuickFilter === 'all') {
-                    // Show all coins
+                    return true;
+                } else if (currentQuickFilter === 'combo') {
+                    if (!item.is_combo && item.relationship !== 'Inside + Narrow CPR') return false;
                 } else if (currentQuickFilter === 'inside') {
-                    const hasStrict = scanData.some(i => i.is_strict || i.relationship === 'Inside Value');
-                    if (hasStrict) {
-                        if (!item.is_strict && item.relationship !== 'Inside Value') return false;
-                    } else {
-                        // Fallback: If 0 strict inside value exist, display Near Coils (95%+ Coils)
-                        if (item.relationship !== 'Near Coil (95%+)') return false;
-                    }
-                } else if (currentQuickFilter === 'higher') {
-                    if (item.relationship !== 'Higher Value') return false;
-                } else if (currentQuickFilter === 'lower') {
-                    if (item.relationship !== 'Lower Value') return false;
+                    if (!item.is_inside_value && !item.is_strict && item.relationship !== 'Inside Value' && item.relationship !== 'Near-Coil Inside' && item.relationship !== 'Inside + Narrow CPR') return false;
+                } else if (currentQuickFilter === 'narrow') {
+                    if (!item.is_narrow && item.relationship !== 'Narrow CPR' && item.relationship !== 'Inside + Narrow CPR') return false;
                 } else if (currentQuickFilter === 'megacoil') {
                     if ((item.compression_pct || 0) < 70) return false;
                 }
@@ -1373,14 +1368,16 @@ DASHBOARD_HTML = """
                 } else if (currentSort.column === 'cpr_width_pct') {
                     valA = a.cpr_width_pct !== undefined ? a.cpr_width_pct : (a.curr_cpr ? a.curr_cpr.cpr_width_pct : 0);
                     valB = b.cpr_width_pct !== undefined ? b.cpr_width_pct : (b.curr_cpr ? b.curr_cpr.cpr_width_pct : 0);
-                } else if (currentSort.column === 'relationship') {
-                    valA = a.relationship || ''; valB = b.relationship || '';
+                } else if (currentSort.column === 'relationship' || currentSort.column === 'priority') {
+                    valA = a.priority || 0; valB = b.priority || 0;
                 } else if (currentSort.column === 'market_cap') {
                     valA = a.market_cap || 0; valB = b.market_cap || 0;
                 }
                 if (valA < valB) return currentSort.ascending ? -1 : 1;
                 if (valA > valB) return currentSort.ascending ? 1 : -1;
-                return 0;
+                const mcDiff = (b.market_cap || 0) - (a.market_cap || 0);
+                if (mcDiff !== 0) return mcDiff;
+                return (b.compression_pct || 0) - (a.compression_pct || 0);
             });
 
             const tvExchange = currentMarket === 'crypto_coinbase' ? 'COINBASE' : 'BINANCE';
@@ -1388,19 +1385,10 @@ DASHBOARD_HTML = """
             const tbody = document.getElementById('table-body');
             
             if (filtered.length === 0) {
-                const lowerCount = scanData.filter(i => i.relationship === 'Lower Value').length;
-                const higherCount = scanData.filter(i => i.relationship === 'Higher Value').length;
-                const emptyMsg = currentQuickFilter === 'inside' 
-                    ? `0 Strict Inside Value CPRs found for this selection.<br>
+                const emptyMsg = `No matching compression setups found for this filter.<br>
                        <span class="text-xs text-amber-300 mt-2 block font-normal">
-                         Market Context: The market had a strong directional move in the prior session, so ${lowerCount} coins formed <strong>Lower Value CPRs</strong>.
-                       </span>
-                       <div class="mt-4 flex flex-wrap items-center justify-center gap-3">
-                         <button onclick="setMode('developing')" class="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-black font-bold text-xs shadow transition-all cursor-pointer">⚡ Switch to Tomorrow (Developing Inside Value)</button>
-                         <button onclick="setQuickFilter('all')" class="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs shadow transition-all cursor-pointer">📊 View All ${scanData.length} 2-Day Trends</button>
-                         <button onclick="setQuickFilter('lower')" class="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs shadow transition-all cursor-pointer">🐻 View ${lowerCount} Lower Value Trends</button>
-                       </div>`
-                    : `No matching setups found right now.<br><span class="text-xs text-slate-500 mt-1 inline-block">Try switching filter pill, timeframe or market.</span>`;
+                         Try clicking <strong>🌐 All Setups</strong> or switching between <strong>🔮 Developing</strong> and <strong>📍 Active</strong>.
+                       </span>`;
                 tbody.innerHTML = `
                     <tr>
                         <td colspan="8" class="text-center py-16 text-slate-400 font-sans">
@@ -1473,12 +1461,18 @@ DASHBOARD_HTML = """
             document.getElementById('modal-symbol').innerText = `${item.clean_symbol} (${item.symbol})`;
             const badge = document.getElementById('modal-badge');
             
-            if (item.is_strict || item.relationship === 'Inside Value') {
+            if (item.is_combo) {
+                badge.innerText = `🔥 Inside + Narrow CPR: -${item.compression_pct}% Compressed`;
+                badge.className = `px-2.5 py-1 rounded-md text-xs font-semibold border bg-gradient-to-r from-orange-500/25 to-purple-500/25 text-amber-300 border-amber-500/50`;
+            } else if (item.is_strict || item.relationship === 'Inside Value') {
                 badge.innerText = `⚡ Inside Value: -${item.compression_pct}% Compressed`;
                 badge.className = `px-2.5 py-1 rounded-md text-xs font-semibold border bg-purple-500/20 text-purple-300 border-purple-500/40`;
+            } else if (item.relationship === 'Near-Coil Inside') {
+                badge.innerText = `🌀 Near-Coil Inside: -${item.compression_pct}% Compressed`;
+                badge.className = `px-2.5 py-1 rounded-md text-xs font-semibold border bg-cyan-500/20 text-cyan-300 border-cyan-500/40`;
             } else {
-                badge.innerText = `${item.rel_icon || '📊'} ${item.relationship}: ${item.compression_pct > 0 ? `-${item.compression_pct}% Compressed` : `+${Math.abs(item.compression_pct)}% Wider`}`;
-                badge.className = `px-2.5 py-1 rounded-md text-xs font-semibold border ${item.rel_badge || 'border-slate-500'}`;
+                badge.innerText = `🎯 Narrow CPR: Width ${item.cpr_width_pct}% (-${item.compression_pct}%)`;
+                badge.className = `px-2.5 py-1 rounded-md text-xs font-semibold border bg-emerald-500/20 text-emerald-300 border-emerald-500/40`;
             }
             document.getElementById('modal-info').innerText = `${item.trigger_name_h}: ${formatCryptoNum(item.pm_high)} • ${item.trigger_name_l}: ${formatCryptoNum(item.pm_low)}`;
 
@@ -1572,7 +1566,7 @@ DASHBOARD_HTML = """
         }
 
         window.onload = () => {
-            currentQuickFilter = 'inside';
+            currentQuickFilter = 'all';
             syncQuickFilterUI();
             updateUIState();
             runScan();
@@ -1648,10 +1642,10 @@ def api_scan():
                 res = f.result()
                 if res:
                     results.append(res)
-            # Prioritize strict Inside Value setups first, then Near Coils, then others.
+            # Prioritize Combos (Holy Grail) first, then Inside Value, then Narrow CPR.
             # Within each group, rank by 24h Volume / Liquidity (descending) so top-tier liquid coins appear first!
             results.sort(key=lambda x: (
-                1 if x.get('is_strict') else (0.5 if x.get('relationship') == 'Near Coil (95%+)' else 0),
+                x.get('priority', 0),
                 min(x.get('market_cap') or 0, 500_000_000),
                 x.get('compression_pct', 0)
             ), reverse=True)
