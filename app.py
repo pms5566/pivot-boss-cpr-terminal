@@ -1,14 +1,12 @@
 #!/usr/bin/env python3
 """
-Pivot Boss CPR Terminal - Inside Value Compression Engine
+Pivot Boss CPR Terminal - Crypto Inside Value Compression Engine
 Dedicated Institutional 2-Day Pivot Range Compression & Breakout Engine
 Based on Frank Ochoa's "Secrets of a Pivot Boss" Master Framework.
 
 Markets:
 - 🪙 Binance Crypto (700+ Liquid Pairs via Official Spot API)
 - 🔵 Coinbase Crypto (400+ Pairs via Official Exchange API)
-- 🇮🇳 Indian Equities (NSE F&O / Top 100)
-- 🇺🇸 US Russell 2000 (Small-Caps & Growth Leaders)
 
 Timeframes:
 - ⚡ Daily CPR (Developing & Active)
@@ -28,57 +26,6 @@ from concurrent.futures import ThreadPoolExecutor
 from flask import Flask, jsonify, render_template_string, request
 
 app = Flask(__name__)
-
-WATCHLISTS = {
-    "india_all": {
-        "name": "🇮🇳 Indian Equities & Indices (NSE F&O / Top 100)",
-        "symbols": [
-            "^NSEI", "^NSEBANK", "RELIANCE.NS", "HDFCBANK.NS", "ICICIBANK.NS",
-            "INFY.NS", "TCS.NS", "LT.NS", "SBIN.NS", "BHARTIARTL.NS",
-            "AXISBANK.NS", "KOTAKBANK.NS", "ITC.NS", "HINDUNILVR.NS", "TATAMOTORS.NS",
-            "M&M.NS", "SUNPHARMA.NS", "BAJFINANCE.NS", "MARUTI.NS", "TITAN.NS",
-            "TATASTEEL.NS", "NTPC.NS", "POWERGRID.NS", "ADANIENT.NS", "ADANIPORTS.NS",
-            "COALINDIA.NS", "ONGC.NS", "JSWSTEEL.NS", "BAJAJFINSV.NS", "TECHM.NS",
-            "HCLTECH.NS", "WIPRO.NS", "DRREDDY.NS", "CIPLA.NS", "ULTRACEMCO.NS",
-            "GRASIM.NS", "NESTLEIND.NS", "HEROMOTOCO.NS", "EICHERMOT.NS", "DIVISLAB.NS",
-            "APOLLOHOSP.NS", "HINDALCO.NS", "BPCL.NS", "BRITANNIA.NS", "ASIANPAINT.NS",
-            "BEL.NS", "TRENT.NS", "SHRIRAMFIN.NS", "HAL.NS", "ZOMATO.NS",
-            "INDUSINDBK.NS", "PNB.NS", "BANKBARODA.NS", "AUBANK.NS", "FEDERALBNK.NS",
-            "IDFCFIRSTB.NS", "BANDHANBNK.NS", "VEDL.NS", "JINDALSTEL.NS", "NMDC.NS",
-            "SAIL.NS", "TATACOMM.NS", "PERSISTENT.NS", "COFORGE.NS", "MPHASIS.NS",
-            "LTIM.NS", "DIXON.NS", "POLYCAB.NS", "HAVELLS.NS", "VOLTAS.NS",
-            "AUROPHARMA.NS", "LUPIN.NS", "BIOCON.NS", "TORNTPHARM.NS", "ALKEM.NS",
-            "DLF.NS", "GODREJPROP.NS", "OBEROIRLTY.NS", "CHOLAFIN.NS", "MUTHOOTFIN.NS",
-            "PFC.NS", "RECLTD.NS", "CANBK.NS", "UNIONBANK.NS", "IOC.NS",
-            "GAIL.NS", "PETRONET.NS", "TATAPOWER.NS", "ADANIGREEN.NS", "SIEMENS.NS",
-            "ABB.NS", "CUMMINSIND.NS", "INDIGO.NS", "IRCTC.NS", "JUBLFOOD.NS",
-            "BOSCHLTD.NS", "COLPAL.NS", "DABUR.NS", "MARICO.NS", "PIDILITIND.NS",
-            "LALPATHLAB.NS", "MOTHERSON.NS"
-        ]
-    },
-    "us_russell2000": {
-        "name": "🇺🇸 US Russell 2000 (Small-Caps & Growth Leaders)",
-        "symbols": [
-            "IWM", "TNA", "TZA", "RKLB", "AFRM", "UPST", "SOFI", "CVNA", "HOOD", "IONQ", "ASTS",
-            "HIMS", "SNDX", "MARA", "RIOT", "CLSK", "HUT", "BITF", "AXSM", "INSM", "VRT",
-            "POWI", "SAIA", "BOOT", "MEDP", "BLD", "FIX", "FTAI", "SYM", "CRDO", "ALAB",
-            "TEM", "ROOT", "KTOS", "POWL", "LUMN", "CAVA", "WING", "SHAK", "BROS", "BLMN",
-            "TXRH", "RXRX", "DNA", "RGTI", "QUBT", "JOBY", "ACHR", "CELH", "ELF", "DUOL", "APP",
-            "CHPT", "PLUG", "RUN", "ENPH", "SEDG", "NOVA", "BE", "STEM", "QS", "LCID",
-            "RIVN", "DKNG", "PENN", "WYNN", "CROX", "DECK", "ONON",
-            "SKX", "ANF", "AEO", "GPS", "URBN", "GAP", "CPNG", "PATH", "AI", "BBAI",
-            "SOUN", "SMCI", "MSTR", "VRNA", "MDGL", "KROS", "KRYS", "PCVX", "ADMA"
-        ]
-    },
-    "crypto_all": {
-        "name": "🪙 Binance Crypto (700+ Liquid Pairs)",
-        "symbols": []
-    },
-    "crypto_coinbase": {
-        "name": "🔵 Coinbase Crypto (400+ Pairs)",
-        "symbols": []
-    }
-}
 
 class BinanceAPIManager:
     def __init__(self):
@@ -184,7 +131,7 @@ class BinanceAPIManager:
         return sorted_symbols[:max_coins]
 
     def fetch_market_bars(self, symbol):
-        sym = symbol.replace("-USD", "USDT").replace(".NS", "").replace("^", "")
+        sym = symbol.replace("-USD", "USDT")
         if not sym.endswith("USDT") and not sym.endswith("USDC"):
             sym = sym + "USDT"
 
@@ -278,7 +225,7 @@ class BinanceAPIManager:
         return f"${val:.1f}"
 
     def get_spot_volume(self, symbol):
-        sym = symbol.replace("-USD", "USDT").replace(".NS", "").replace("^", "")
+        sym = symbol.replace("-USD", "USDT")
         if not sym.endswith("USDT"):
             sym = sym + "USDT"
         now = time.time()
@@ -397,7 +344,7 @@ class CoinbaseAPIManager:
         return sorted_symbols[:max_coins]
 
     def fetch_market_bars(self, symbol):
-        sym = symbol.replace("USDT", "-USD").replace("USDC", "-USD").replace(".NS", "").replace("^", "")
+        sym = symbol.replace("USDT", "-USD").replace("USDC", "-USD")
         if not sym.endswith("-USD"):
             sym = sym + "-USD"
 
@@ -475,7 +422,7 @@ class CoinbaseAPIManager:
         return monthly_bars, daily_candles
 
     def get_spot_volume(self, symbol):
-        sym = symbol.replace("USDT", "-USD").replace("USDC", "-USD").replace(".NS", "").replace("^", "")
+        sym = symbol.replace("USDT", "-USD").replace("USDC", "-USD")
         if not sym.endswith("-USD"):
             sym = sym + "-USD"
         now = time.time()
@@ -495,184 +442,6 @@ class CoinbaseAPIManager:
         return f"${val:.1f}"
 
 COINBASE_MGR = CoinbaseAPIManager()
-
-class YahooSessionManager:
-    def __init__(self):
-        self.session = requests.Session()
-        self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36'
-        })
-        adapter = requests.adapters.HTTPAdapter(pool_connections=60, pool_maxsize=60, max_retries=1)
-        self.session.mount('https://', adapter)
-        self.session.mount('http://', adapter)
-        self.crumb = None
-        self.crumb_time = 0
-        self.lock = threading.Lock()
-        self.data_cache = {}
-
-    def ensure_crumb(self):
-        with self.lock:
-            now = time.time()
-            if self.crumb and (now - self.crumb_time < 3600):
-                return self.crumb
-            try:
-                self.session.get('https://fc.yahoo.com', timeout=6)
-                r = self.session.get('https://query2.finance.yahoo.com/v1/test/getcrumb', timeout=6)
-                txt = r.text.strip()
-                if txt and 'Too Many Requests' not in txt and '<html' not in txt:
-                    self.crumb = txt
-                    self.crumb_time = now
-                    return self.crumb
-            except Exception:
-                pass
-
-    def fetch_crypto_direct(self, symbol):
-        """
-        Direct native crypto exchange pipeline:
-        Tries Binance API -> Gate.io API -> falls back to Yahoo Finance.
-        Returns (sorted_months, daily_candles).
-        """
-        base = symbol.replace('-USD', '').replace('USDT', '').replace('USD', '')
-        binance_pair = f"{base}USDT"
-        gate_pair = f"{base}_USDT"
-
-        daily_candles = []
-
-        # 1. Try Binance
-        try:
-            url = f"https://api.binance.com/api/v3/klines?symbol={binance_pair}&interval=1d&limit=730"
-            r = self.session.get(url, timeout=3)
-            if r.status_code == 200:
-                for k in r.json():
-                    ts = int(k[0]) // 1000
-                    o, h, l, c = float(k[1]), float(k[2]), float(k[3]), float(k[4])
-                    if o > 0 and h > 0 and l > 0 and c > 0:
-                        daily_candles.append({
-                            "time": ts,
-                            "date": datetime.datetime.fromtimestamp(ts).strftime('%Y-%m-%d'),
-                            "open": o, "high": h, "low": l, "close": c,
-                            "volume": int(float(k[5]))
-                        })
-        except Exception:
-            pass
-
-        # 2. Try Gate.io (unrestricted global exchange)
-        if not daily_candles:
-            try:
-                url = f"https://api.gateio.ws/api/v4/spot/candlesticks?currency_pair={gate_pair}&interval=1d&limit=730"
-                r = self.session.get(url, timeout=3)
-                if r.status_code == 200:
-                    for k in r.json():
-                        ts = int(k[0])
-                        o, h, l, c = float(k[5]), float(k[3]), float(k[4]), float(k[2])
-                        if o > 0 and h > 0 and l > 0 and c > 0:
-                            daily_candles.append({
-                                "time": ts,
-                                "date": datetime.datetime.fromtimestamp(ts).strftime('%Y-%m-%d'),
-                                "open": o, "high": h, "low": l, "close": c,
-                                "volume": int(float(k[1]))
-                            })
-            except Exception:
-                pass
-
-        if daily_candles:
-            monthly_dict = {}
-            for candle in daily_candles:
-                m_key = candle['date'][:7]
-                if m_key not in monthly_dict:
-                    monthly_dict[m_key] = {
-                        'month': m_key,
-                        'date': candle.get('date', f"{m_key}-01"),
-                        'time': candle['time'],
-                        'open': candle['open'],
-                        'high': candle['high'],
-                        'low': candle['low'],
-                        'close': candle['close'],
-                        'volume': candle['volume']
-                    }
-                else:
-                    monthly_dict[m_key]['high'] = max(monthly_dict[m_key]['high'], candle['high'])
-                    monthly_dict[m_key]['low'] = min(monthly_dict[m_key]['low'], candle['low'])
-                    monthly_dict[m_key]['close'] = candle['close']
-                    monthly_dict[m_key]['volume'] += candle['volume']
-            sorted_months = [monthly_dict[k] for k in sorted(monthly_dict.keys())]
-            return (sorted_months, daily_candles)
-
-        return ([], [])
-
-    def fetch_market_bars(self, symbol):
-        cache_key = f"{symbol}_DAILY_HISTORY"
-        now = time.time()
-        if cache_key in self.data_cache:
-            ts, bars = self.data_cache[cache_key]
-            if now - ts < 600:
-                return bars
-
-        # Direct Crypto Exchange Pipeline (Binance / Gate.io)
-        if "-USD" in symbol or "USDT" in symbol:
-            months, candles = self.fetch_crypto_direct(symbol)
-            if months and candles:
-                self.data_cache[cache_key] = (now, (months, candles))
-                return (months, candles)
-
-        crumb = self.ensure_crumb()
-        encoded_sym = urllib.parse.quote(symbol)
-        url = f"https://query2.finance.yahoo.com/v8/finance/chart/{encoded_sym}?range=2y&interval=1d"
-        if crumb:
-            url += f"&crumb={crumb}"
-
-        try:
-            r = self.session.get(url, timeout=8)
-            if r.status_code == 200:
-                data = r.json()
-                res = data['chart']['result'][0]
-                timestamps = res.get('timestamp', [])
-                quote = res['indicators']['quote'][0]
-                
-                monthly_dict = {}
-                daily_candles = []
-                
-                for i in range(len(timestamps)):
-                    t = timestamps[i]
-                    o = quote.get('open', [])[i] if i < len(quote.get('open', [])) else None
-                    h = quote.get('high', [])[i] if i < len(quote.get('high', [])) else None
-                    l = quote.get('low', [])[i] if i < len(quote.get('low', [])) else None
-                    c = quote.get('close', [])[i] if i < len(quote.get('close', [])) else None
-                    v = quote.get('volume', [])[i] if i < len(quote.get('volume', [])) else None
-
-                    if o is not None and h is not None and l is not None and c is not None:
-                        if o > 0 and h > 0 and l > 0 and c > 0:
-                            candle = {
-                                "time": t, "date": datetime.datetime.fromtimestamp(t).strftime('%Y-%m-%d'),
-                                "open": float(o), "high": float(h), "low": float(l), "close": float(c),
-                                "volume": int(v or 0)
-                            }
-                            daily_candles.append(candle)
-                            
-                            m_key = datetime.datetime.fromtimestamp(t).strftime('%Y-%m')
-                            c_date = datetime.datetime.fromtimestamp(t).strftime('%Y-%m-%d')
-                            if m_key not in monthly_dict:
-                                monthly_dict[m_key] = {
-                                    'month': m_key, 'date': c_date, 'time': t, 'open': float(o),
-                                    'high': float(h), 'low': float(l), 'close': float(c),
-                                    'volume': int(v or 0)
-                                }
-                            else:
-                                monthly_dict[m_key]['high'] = max(monthly_dict[m_key]['high'], float(h))
-                                monthly_dict[m_key]['low'] = min(monthly_dict[m_key]['low'], float(l))
-                                monthly_dict[m_key]['close'] = float(c)
-                                monthly_dict[m_key]['volume'] += int(v or 0)
-
-                sorted_months = [monthly_dict[k] for k in sorted(monthly_dict.keys())]
-                if sorted_months and daily_candles:
-                    payload = (sorted_months, daily_candles)
-                    self.data_cache[cache_key] = (now, payload)
-                    return payload
-        except Exception:
-            pass
-        return ([], [])
-
-YAHOO_MGR = YahooSessionManager()
 
 def calculate_cpr_and_pivots(h, l, c, decimals=2):
     p = (h + l + c) / 3.0
@@ -713,22 +482,14 @@ def calculate_cpr_and_pivots(h, l, c, decimals=2):
 
 def process_cpr_setup(symbol, timeframe="monthly", mode="active"):
     """Inside Value CPR calculation following Frank Ochoa's Master Framework"""
-    is_crypto = symbol.endswith("USDT") or symbol.endswith("USDC") or ("-USD" in symbol)
-    if is_crypto:
-        if symbol.endswith("-USD"):
-            monthly_bars, daily_candles = COINBASE_MGR.fetch_market_bars(symbol)
-            if not daily_candles:
-                monthly_bars, daily_candles = BINANCE_MGR.fetch_market_bars(symbol)
-            if not daily_candles:
-                monthly_bars, daily_candles = YAHOO_MGR.fetch_market_bars(symbol)
-        else:
+    if symbol.endswith("-USD"):
+        monthly_bars, daily_candles = COINBASE_MGR.fetch_market_bars(symbol)
+        if not daily_candles:
             monthly_bars, daily_candles = BINANCE_MGR.fetch_market_bars(symbol)
-            if not daily_candles:
-                monthly_bars, daily_candles = COINBASE_MGR.fetch_market_bars(symbol)
-            if not daily_candles:
-                monthly_bars, daily_candles = YAHOO_MGR.fetch_market_bars(symbol)
     else:
-        monthly_bars, daily_candles = YAHOO_MGR.fetch_market_bars(symbol)
+        monthly_bars, daily_candles = BINANCE_MGR.fetch_market_bars(symbol)
+        if not daily_candles:
+            monthly_bars, daily_candles = COINBASE_MGR.fetch_market_bars(symbol)
 
     if not daily_candles or len(daily_candles) < 3:
         return None
@@ -758,7 +519,7 @@ def process_cpr_setup(symbol, timeframe="monthly", mode="active"):
             return None
 
         last_price = daily_candles[-1]['close']
-        dec = 8 if is_crypto and last_price < 0.001 else (6 if is_crypto and last_price < 0.01 else (4 if is_crypto and last_price < 1.0 else (3 if is_crypto and last_price < 10.0 else 2)))
+        dec = 8 if last_price < 0.001 else (6 if last_price < 0.01 else (4 if last_price < 1.0 else (3 if last_price < 10.0 else 2)))
         
         curr_q = sorted_quarters[-1]
         prev_q = sorted_quarters[-2]
@@ -790,7 +551,7 @@ def process_cpr_setup(symbol, timeframe="monthly", mode="active"):
             return None
 
         last_price = daily_candles[-1]['close']
-        dec = 8 if is_crypto and last_price < 0.001 else (6 if is_crypto and last_price < 0.01 else (4 if is_crypto and last_price < 1.0 else (3 if is_crypto and last_price < 10.0 else 2)))
+        dec = 8 if last_price < 0.001 else (6 if last_price < 0.01 else (4 if last_price < 1.0 else (3 if last_price < 10.0 else 2)))
 
         curr_m = monthly_bars[-1]
         prev_m = monthly_bars[-2]
@@ -828,18 +589,17 @@ def process_cpr_setup(symbol, timeframe="monthly", mode="active"):
         day_before_c = daily_candles[-3]
         
         # Guard: In crypto, ensure the last candle is active (today or yesterday)
-        if is_crypto:
-            now_utc = datetime.datetime.now(datetime.timezone.utc)
-            today_utc = now_utc.strftime("%Y-%m-%d")
-            yesterday_utc = (now_utc - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
-            last_candle_date = today_c.get("date", "")
-            if last_candle_date not in [today_utc, yesterday_utc]:
-                return None
+        now_utc = datetime.datetime.now(datetime.timezone.utc)
+        today_utc = now_utc.strftime("%Y-%m-%d")
+        yesterday_utc = (now_utc - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+        last_candle_date = today_c.get("date", "")
+        if last_candle_date not in [today_utc, yesterday_utc]:
+            return None
         
         last_price = today_c['close']
         if last_price < 0.000001: return None
         
-        dec = 8 if is_crypto and last_price < 0.001 else (6 if is_crypto and last_price < 0.01 else (4 if is_crypto and last_price < 1.0 else (3 if is_crypto and last_price < 10.0 else 2)))
+        dec = 8 if last_price < 0.001 else (6 if last_price < 0.01 else (4 if last_price < 1.0 else (3 if last_price < 10.0 else 2)))
         
         if mode == "developing":
             cpr_target = calculate_cpr_and_pivots(today_c['high'], today_c['low'], today_c['close'], dec)
@@ -925,23 +685,19 @@ def process_cpr_setup(symbol, timeframe="monthly", mode="active"):
     else:
         quality_tag = {"text": f"{rel_icon} {relationship}", "badge": rel_badge}
 
-    clean_symbol = symbol.replace("USDT", "").replace("USDC", "").replace("-USD", "").replace(".NS", "").replace("^", "")
+    clean_symbol = symbol.replace("USDT", "").replace("USDC", "").replace("-USD", "")
     
-    if is_crypto:
-        if symbol.endswith("-USD"):
-            vol_usd = COINBASE_MGR.get_spot_volume(symbol)
-            if not vol_usd:
-                vol_usd = BINANCE_MGR.get_spot_volume(symbol)
-            mc_formatted = (COINBASE_MGR.format_usd(vol_usd) + " 24h Vol") if vol_usd > 0 else None
-        else:
+    if symbol.endswith("-USD"):
+        vol_usd = COINBASE_MGR.get_spot_volume(symbol)
+        if not vol_usd:
             vol_usd = BINANCE_MGR.get_spot_volume(symbol)
-            if not vol_usd:
-                vol_usd = COINBASE_MGR.get_spot_volume(symbol)
-            mc_formatted = (BINANCE_MGR.format_usd(vol_usd) + " 24h Vol") if vol_usd > 0 else None
-        market_cap = vol_usd
+        mc_formatted = (COINBASE_MGR.format_usd(vol_usd) + " 24h Vol") if vol_usd > 0 else None
     else:
-        market_cap = None
-        mc_formatted = None
+        vol_usd = BINANCE_MGR.get_spot_volume(symbol)
+        if not vol_usd:
+            vol_usd = COINBASE_MGR.get_spot_volume(symbol)
+        mc_formatted = (BINANCE_MGR.format_usd(vol_usd) + " 24h Vol") if vol_usd > 0 else None
+    market_cap = vol_usd
 
     return {
         "symbol": symbol,
@@ -980,7 +736,7 @@ DASHBOARD_HTML = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Pivot Boss CPR Terminal • Inside Value Compression Engine</title>
+    <title>Pivot Boss CPR Terminal • Crypto Inside Value Engine</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
     <script>
@@ -1021,10 +777,10 @@ DASHBOARD_HTML = """
                 </div>
                 <div>
                     <h1 class="text-lg font-bold tracking-tight bg-gradient-to-r from-white via-amber-200 to-orange-400 bg-clip-text text-transparent flex items-center gap-2">
-                        PIVOT BOSS CPR TERMINAL
+                        PIVOT BOSS CRYPTO TERMINAL
                         <span id="header-mode-badge" class="px-2 py-0.5 rounded text-[10px] bg-purple-500/20 text-purple-300 font-mono font-medium border border-purple-500/30">INSIDE VALUE COMPRESSION</span>
                     </h1>
-                    <p class="text-xs text-slate-400">Institutional 2-Day Pivot Range Compression & Breakout Engine (Frank Ochoa Framework)</p>
+                    <p class="text-xs text-slate-400">Institutional 2-Day Pivot Range Compression & Breakout Engine (Binance & Coinbase Official APIs)</p>
                 </div>
             </div>
 
@@ -1054,7 +810,7 @@ DASHBOARD_HTML = """
                     </button>
                 </div>
 
-                <!-- Market Selector -->
+                <!-- Market Selector: Binance vs Coinbase -->
                 <div class="flex bg-navy-950 p-1 rounded-xl border border-navy-700 text-xs font-medium shadow-inner">
                     <button onclick="setMarket('crypto_all')" id="btn-crypto" class="px-3 py-1.5 rounded-lg transition-all text-white bg-indigo-600 font-semibold shadow">
                         🪙 Binance Crypto
@@ -1062,15 +818,9 @@ DASHBOARD_HTML = """
                     <button onclick="setMarket('crypto_coinbase')" id="btn-coinbase" class="px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white">
                         🔵 Coinbase Crypto
                     </button>
-                    <button onclick="setMarket('india_all')" id="btn-india" class="px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white">
-                        🇮🇳 India NSE
-                    </button>
-                    <button onclick="setMarket('us_russell2000')" id="btn-us" class="px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white">
-                        🇺🇸 Russell 2000
-                    </button>
                 </div>
 
-                <!-- Crypto 24h Volume Filter (Visible when Crypto is active) -->
+                <!-- Crypto 24h Volume Filter -->
                 <div id="crypto-mc-controls" class="flex items-center bg-navy-950 p-1 rounded-xl border border-indigo-500/30 text-xs font-medium shadow-inner">
                     <button onclick="setMinMC(0)" id="btn-mc-all" class="px-2.5 py-1.5 rounded-lg transition-all text-white bg-indigo-600 font-bold shadow" title="All Liquid Pairs">
                         <span id="btn-mc-all-label">🌐 All Pairs</span>
@@ -1107,7 +857,7 @@ DASHBOARD_HTML = """
                 <div>
                     <h3 class="text-sm font-bold text-amber-300" id="banner-title">Daily Developing Inside Value CPR Setup:</h3>
                     <p class="text-xs text-slate-300 mt-0.5" id="banner-desc">
-                        These assets are in <strong>verified volatility compression</strong> (Pivot Range completely inside prior Pivot Range). Breakouts above Upper Boundary/Today High or breakdowns below Lower Boundary/Today Low trigger violent expansions.
+                        These crypto assets are in <strong>verified volatility compression</strong> (Pivot Range completely inside prior Pivot Range). Breakouts above Upper Boundary/Today High or breakdowns below Lower Boundary/Today Low trigger violent expansions.
                     </p>
                 </div>
             </div>
@@ -1139,13 +889,22 @@ DASHBOARD_HTML = """
             <div class="overflow-x-auto flex-1">
                 <table class="w-full text-left text-xs border-collapse">
                     <thead id="table-head">
-                        <!-- Rendered dynamically -->
+                        <tr class="bg-navy-950/90 border-b border-navy-700 text-slate-400 font-semibold tracking-wider uppercase text-[11px]">
+                            <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('market_cap')">Coin Pair & 24h Vol ↕</th>
+                            <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('ltp')">Current LTP & Chg ↕</th>
+                            <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('compression_pct')">Compression % & Setup ↕</th>
+                            <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('cpr_width_pct')">Target CPR Band (BC • P • TC) ↕</th>
+                            <th class="py-3.5 px-4">Base CPR Band (BC • P • TC)</th>
+                            <th class="py-3.5 px-4">Breakout Triggers</th>
+                            <th class="py-3.5 px-4">Position Status</th>
+                            <th class="py-3.5 px-4 text-center">Chart / TV</th>
+                        </tr>
                     </thead>
                     <tbody id="table-body" class="divide-y divide-navy-700/50 font-mono">
                         <tr>
                             <td colspan="8" class="text-center py-16 text-slate-400 font-sans">
                                 <div class="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-amber-400 mb-3"></div>
-                                <p>Scanning market universe for Inside Value CPRs & 2-Day Trends...</p>
+                                <p>Scanning crypto universe for Inside Value CPRs & 2-Day Trends...</p>
                             </td>
                         </tr>
                     </tbody>
@@ -1185,10 +944,10 @@ DASHBOARD_HTML = """
                     <span class="text-2xl">📖</span>
                     <div>
                         <h2 class="text-base font-bold text-white tracking-tight flex items-center gap-2">
-                            PIVOT BOSS • INSIDE VALUE CPR & 2-DAY PIVOT RANGE PLAYBOOK
+                            PIVOT BOSS • CRYPTO INSIDE VALUE CPR PLAYBOOK
                             <span class="px-2 py-0.5 rounded text-[10px] bg-amber-500/20 text-amber-300 font-mono border border-amber-500/40">FRANK OCHOA FRAMEWORK</span>
                         </h2>
-                        <p class="text-xs text-slate-400">Mastering institutional volatility compression, 2-day pivot relationships, and breakout execution</p>
+                        <p class="text-xs text-slate-400">Mastering institutional volatility compression, 2-day pivot relationships, and breakout execution in crypto</p>
                     </div>
                 </div>
                 <button onclick="closePlaybookModal()" class="text-slate-400 hover:text-white p-2 rounded-lg hover:bg-navy-800 transition">
@@ -1282,10 +1041,10 @@ DASHBOARD_HTML = """
                             <span>📋 5-Minute Screening Routine</span>
                         </div>
                         <ol class="list-decimal list-inside space-y-1 text-slate-400">
-                            <li><strong class="text-white">Check 🔮 Developing mode:</strong> See what coins/stocks are coiling for tomorrow or next month before the session begins.</li>
+                            <li><strong class="text-white">Check 🔮 Developing mode:</strong> See what coins are coiling for tomorrow or next month before the UTC close.</li>
                             <li><strong class="text-white">Click ⚡ Inside Value:</strong> Pinpoint assets with strict inside value compression.</li>
                             <li><strong class="text-white">Check 💥 MegaCoil:</strong> Identify candidates with &gt; 70% compression for massive expansion potential.</li>
-                            <li><strong class="text-white">Launch TV ↗:</strong> Open the selected asset directly in TradingView to fine-tune entry timing on the 5m/15m chart.</li>
+                            <li><strong class="text-white">Launch TV ↗:</strong> Open the selected coin directly in TradingView to fine-tune entry timing on the 5m/15m chart.</li>
                         </ol>
                     </div>
 
@@ -1294,7 +1053,7 @@ DASHBOARD_HTML = """
                             <span>🛡️ Golden Risk Management Rules</span>
                         </div>
                         <ul class="space-y-1 text-slate-400">
-                            <li><strong class="text-white">Maximum 1% - 1.5% Risk:</strong> Never risk more than 1.5% of total portfolio on an individual trade.</li>
+                            <li><strong class="text-white">Maximum 1% - 1.5% Risk:</strong> Never risk more than 1.5% of total portfolio on an individual altcoin position.</li>
                             <li><strong class="text-white">Respect Breakeven:</strong> Once price reaches 1.5R or tests S1/R1, immediately move Stop Loss to Breakeven.</li>
                             <li><strong class="text-white">Never Trade Against Trend:</strong> If market forms Lower Value, take only sell-side setups. If Higher Value, take only buy-side setups.</li>
                         </ul>
@@ -1314,7 +1073,7 @@ DASHBOARD_HTML = """
         let currentTimeframe = 'daily';
         let currentMode = 'developing';
         let currentMarket = 'crypto_all';
-        let currentMinMC = 0; // 0 for all Binance USDT pairs
+        let currentMinMC = 0; // 0 for all liquid pairs
         let currentSort = { column: 'compression_pct', ascending: false };
         let scanData = [];
         let chartInstance = null;
@@ -1447,68 +1206,58 @@ DASHBOARD_HTML = """
             tableTitle.innerText = `🔥 Verified ${tfName} ${modeName} Inside Value Setups`;
             tableTitle.className = 'text-xs font-bold uppercase tracking-wider text-amber-400 flex items-center gap-2';
 
-            // Crypto market banner adjustments
-            if (currentMarket === 'crypto_all' || currentMarket === 'crypto_coinbase') {
-                const isCoinbase = currentMarket === 'crypto_coinbase';
-                const exchangeName = isCoinbase ? 'Coinbase' : 'Binance';
-                const totalLabel = isCoinbase ? '400+ Pairs' : '700+ Pairs';
-                const volLabel = currentMinMC >= 1000000 ? `$${(currentMinMC/1e6).toFixed(0)}M` : (currentMinMC > 0 ? `$${currentMinMC}` : 'All');
-                
-                if (currentQuickFilter === 'inside') {
-                    const hasStrict = scanData.some(i => i.is_strict || i.relationship === 'Inside Value');
-                    if (hasStrict) {
-                        tableTitle.innerText = `⚡ Verified Strict Inside Value CPRs (${exchangeName} • ${tfName} ${modeName})`;
-                        bannerTitle.innerText = `${tfName} ${modeName} Strict Inside Value CPR Setup:`;
-                        bannerDesc.innerHTML = `These assets are in <strong>verified volatility compression</strong> (Pivot Range completely inside prior Pivot Range). Breakouts above Upper Boundary/Today High or breakdowns below Lower Boundary/Today Low trigger violent expansions.`;
-                    } else {
-                        tableTitle.innerText = `🌀 95%+ Near-Coil CPRs (${exchangeName} • ${tfName} ${modeName})`;
-                        bannerTitle.innerText = `${tfName} ${modeName} Near-Coil Setups (0 Strict Inside Today):`;
-                        bannerDesc.innerHTML = `Due to yesterday's trend day, 0 coins formed 100% strict inside value. Showing <strong>closest 95%+ Near-Coil candidates</strong> coiling within 0.3% of prior CPR.`;
-                    }
-                } else if (currentQuickFilter === 'all') {
-                    tableTitle.innerText = `📊 ${exchangeName} ${tfName} ${modeName} - All 2-Day Relationships`;
-                    bannerTitle.innerText = `Two-Day Pivot Range Master Framework (${exchangeName}):`;
-                    bannerDesc.innerHTML = `Tracking all 7 Frank Ochoa Two-Day Relationships (Inside Value, Outside Value, Higher Value, Lower Value, Overlap Higher, Overlap Lower).`;
-                } else if (currentQuickFilter === 'higher') {
-                    tableTitle.innerText = `🚀 ${exchangeName} Higher Value Bullish Continuations`;
-                } else if (currentQuickFilter === 'lower') {
-                    tableTitle.innerText = `🐻 ${exchangeName} Lower Value Bearish Continuations`;
-                } else if (currentQuickFilter === 'megacoil') {
-                    tableTitle.innerText = `💥 ${exchangeName} MegaCoil Setups (>70% Compression)`;
+            const isCoinbase = currentMarket === 'crypto_coinbase';
+            const exchangeName = isCoinbase ? 'Coinbase' : 'Binance';
+            const totalLabel = isCoinbase ? '400+ Pairs' : '700+ Pairs';
+            const volLabel = currentMinMC >= 1000000 ? `$${(currentMinMC/1e6).toFixed(0)}M` : (currentMinMC > 0 ? `$${currentMinMC}` : 'All');
+            
+            if (currentQuickFilter === 'inside') {
+                const hasStrict = scanData.some(i => i.is_strict || i.relationship === 'Inside Value');
+                if (hasStrict) {
+                    tableTitle.innerText = `⚡ Verified Strict Inside Value CPRs (${exchangeName} • ${tfName} ${modeName})`;
+                    bannerTitle.innerText = `${tfName} ${modeName} Strict Inside Value CPR Setup:`;
+                    bannerDesc.innerHTML = `These assets are in <strong>verified volatility compression</strong> (Pivot Range completely inside prior Pivot Range). Breakouts above Upper Boundary/Today High or breakdowns below Lower Boundary/Today Low trigger violent expansions.`;
+                } else {
+                    tableTitle.innerText = `🌀 95%+ Near-Coil CPRs (${exchangeName} • ${tfName} ${modeName})`;
+                    bannerTitle.innerText = `${tfName} ${modeName} Near-Coil Setups (0 Strict Inside Today):`;
+                    bannerDesc.innerHTML = `Due to yesterday's trend day, 0 coins formed 100% strict inside value. Showing <strong>closest 95%+ Near-Coil candidates</strong> coiling within 0.3% of prior CPR.`;
                 }
+            } else if (currentQuickFilter === 'all') {
+                tableTitle.innerText = `📊 ${exchangeName} ${tfName} ${modeName} - All 2-Day Relationships`;
+                bannerTitle.innerText = `Two-Day Pivot Range Master Framework (${exchangeName}):`;
+                bannerDesc.innerHTML = `Tracking all 7 Frank Ochoa Two-Day Relationships (Inside Value, Outside Value, Higher Value, Lower Value, Overlap Higher, Overlap Lower).`;
+            } else if (currentQuickFilter === 'higher') {
+                tableTitle.innerText = `🚀 ${exchangeName} Higher Value Bullish Continuations`;
+            } else if (currentQuickFilter === 'lower') {
+                tableTitle.innerText = `🐻 ${exchangeName} Lower Value Bearish Continuations`;
+            } else if (currentQuickFilter === 'megacoil') {
+                tableTitle.innerText = `💥 ${exchangeName} MegaCoil Setups (>70% Compression)`;
             }
 
             // Market selector styles
-            ['india', 'us', 'crypto', 'coinbase'].forEach(m => {
-                const btn = document.getElementById(`btn-${m}`);
-                if (btn) {
-                    if ((m === 'india' && currentMarket === 'india_all') ||
-                        (m === 'us' && currentMarket === 'us_russell2000') ||
-                        (m === 'crypto' && currentMarket === 'crypto_all') ||
-                        (m === 'coinbase' && currentMarket === 'crypto_coinbase')) {
-                        btn.className = 'px-3 py-1.5 rounded-lg transition-all text-white bg-indigo-600 font-bold shadow';
-                    } else {
-                        btn.className = 'px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white';
-                    }
-                }
-            });
-
-            // Crypto 24h Volume Filter Controls
-            const mcControls = document.getElementById('crypto-mc-controls');
-            if (currentMarket === 'crypto_all' || currentMarket === 'crypto_coinbase') {
-                if (mcControls) mcControls.classList.remove('hidden');
-                const lbl = document.getElementById('btn-mc-all-label');
-                if (lbl) lbl.innerText = currentMarket === 'crypto_coinbase' ? '🔵 Coinbase All (400+)' : '🌐 Binance All (700+)';
-                ['all', '5m', '50m', '500m'].forEach(k => {
-                    const btn = document.getElementById(`btn-mc-${k}`);
-                    if (btn) btn.className = 'px-2.5 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white';
-                });
-                const activeKey = currentMinMC >= 100000000 ? '500m' : (currentMinMC >= 25000000 ? '50m' : (currentMinMC >= 1000000 ? '5m' : 'all'));
-                const activeBtn = document.getElementById(`btn-mc-${activeKey}`);
-                if (activeBtn) activeBtn.className = 'px-2.5 py-1.5 rounded-lg transition-all text-white bg-indigo-600 font-bold shadow';
-            } else {
-                if (mcControls) mcControls.classList.add('hidden');
+            const btnCrypto = document.getElementById('btn-crypto');
+            const btnCoinbase = document.getElementById('btn-coinbase');
+            if (btnCrypto) {
+                btnCrypto.className = currentMarket === 'crypto_all' 
+                    ? 'px-3 py-1.5 rounded-lg transition-all text-white bg-indigo-600 font-bold shadow'
+                    : 'px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white';
             }
+            if (btnCoinbase) {
+                btnCoinbase.className = currentMarket === 'crypto_coinbase' 
+                    ? 'px-3 py-1.5 rounded-lg transition-all text-white bg-indigo-600 font-bold shadow'
+                    : 'px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white';
+            }
+
+            // Volume Controls
+            const lbl = document.getElementById('btn-mc-all-label');
+            if (lbl) lbl.innerText = isCoinbase ? '🔵 Coinbase All (400+)' : '🌐 Binance All (700+)';
+            ['all', '5m', '50m', '500m'].forEach(k => {
+                const btn = document.getElementById(`btn-mc-${k}`);
+                if (btn) btn.className = 'px-2.5 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white';
+            });
+            const activeKey = currentMinMC >= 100000000 ? '500m' : (currentMinMC >= 25000000 ? '50m' : (currentMinMC >= 1000000 ? '5m' : 'all'));
+            const activeBtn = document.getElementById(`btn-mc-${activeKey}`);
+            if (activeBtn) activeBtn.className = 'px-2.5 py-1.5 rounded-lg transition-all text-white bg-indigo-600 font-bold shadow';
         }
 
         function setTimeframe(tf) {
@@ -1531,45 +1280,14 @@ DASHBOARD_HTML = """
 
         async function runScan() {
             const tbody = document.getElementById('table-body');
-            const thead = document.getElementById('table-head');
             const icon = document.getElementById('refresh-icon');
             icon.classList.add('animate-spin');
-            
-            const isCrypto = currentMarket === 'crypto_all' || currentMarket === 'crypto_coinbase';
-
-            if (isCrypto) {
-                thead.innerHTML = `
-                    <tr class="bg-navy-950/90 border-b border-navy-700 text-slate-400 font-semibold tracking-wider uppercase text-[11px]">
-                        <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('market_cap')">Coin Pair & 24h Vol ↕</th>
-                        <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('ltp')">Current LTP & Chg ↕</th>
-                        <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('compression_pct')">Compression % & Setup ↕</th>
-                        <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('cpr_width_pct')">Target CPR Band (BC • P • TC) ↕</th>
-                        <th class="py-3.5 px-4">Base CPR Band (BC • P • TC)</th>
-                        <th class="py-3.5 px-4">Breakout Triggers</th>
-                        <th class="py-3.5 px-4">Position Status</th>
-                        <th class="py-3.5 px-4 text-center">Chart / TV</th>
-                    </tr>
-                `;
-            } else {
-                thead.innerHTML = `
-                    <tr class="bg-navy-950/90 border-b border-navy-700 text-slate-400 font-semibold tracking-wider uppercase text-[11px]">
-                        <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('clean_symbol')">Asset Symbol ↕</th>
-                        <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('ltp')">Current LTP & Chg ↕</th>
-                        <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('compression_pct')">Compression % & Setup ↕</th>
-                        <th class="py-3.5 px-4">Target CPR Band (BC • P • TC)</th>
-                        <th class="py-3.5 px-4">Base CPR Band (BC • P • TC)</th>
-                        <th class="py-3.5 px-4">Breakout Triggers</th>
-                        <th class="py-3.5 px-4">Targets (S1 • R1)</th>
-                        <th class="py-3.5 px-4 text-center">Chart / TV</th>
-                    </tr>
-                `;
-            }
 
             tbody.innerHTML = `
                 <tr>
                     <td colspan="8" class="text-center py-16 text-slate-400 font-sans">
                         <div class="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-amber-400 mb-3"></div>
-                        <p>Scanning ${currentMarket.toUpperCase()} for Inside Value CPRs & 2-Day Trends...</p>
+                        <p>Scanning ${currentMarket === 'crypto_coinbase' ? 'Coinbase' : 'Binance'} for Inside Value CPRs & 2-Day Trends...</p>
                     </td>
                 </tr>
             `;
@@ -1651,7 +1369,6 @@ DASHBOARD_HTML = """
                 return 0;
             });
 
-            const isCrypto = currentMarket === 'crypto_all' || currentMarket === 'crypto_coinbase';
             const tvExchange = currentMarket === 'crypto_coinbase' ? 'COINBASE' : 'BINANCE';
             const exchangeBadge = currentMarket === 'crypto_coinbase' ? 'Coinbase' : 'Binance';
             const tbody = document.getElementById('table-body');
@@ -1685,75 +1402,28 @@ DASHBOARD_HTML = """
                 const chgColor = item.change >= 0 ? 'text-emerald-400' : 'text-rose-400';
                 const chgSign = item.change >= 0 ? '+' : '';
 
-                if (isCrypto) {
-                    return `
-                        <tr class="hover:bg-navy-800/80 transition group">
-                            <td class="py-3.5 px-4">
-                                <div class="font-bold text-white text-sm tracking-tight flex items-center gap-1.5">
-                                    <span>${item.clean_symbol}</span>
-                                    ${item.mc_formatted ? `<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">${item.mc_formatted}</span>` : ''}
-                                </div>
-                                <div class="text-[10px] text-slate-500 font-sans">${item.symbol} • ${exchangeBadge}</div>
-                            </td>
-                            <td class="py-3.5 px-4">
-                                <div class="font-bold text-slate-100 font-mono">${formatCryptoNum(item.ltp)}</div>
-                                <div class="${chgColor} text-[11px] font-sans font-medium">${chgSign}${formatCryptoNum(item.change)} (${chgSign}${item.change_pct}%)</div>
-                            </td>
-                            <td class="py-3.5 px-4">
-                                <span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold border ${item.rel_badge || item.quality_tag.badge} font-sans">
-                                    ${item.rel_icon || '⚡'} ${item.relationship || item.quality_tag.text}
-                                </span>
-                                <div class="text-[10px] font-sans mt-0.5 ${item.compression_pct > 0 ? 'text-amber-400' : 'text-slate-400'}">${item.compression_pct > 0 ? `-${item.compression_pct}% Compressed` : `+${Math.abs(item.compression_pct)}% Wider`}</div>
-                            </td>
-                            <td class="py-3.5 px-4 text-[11px]">
-                                <div class="text-slate-200 font-semibold"><span class="text-blue-400 font-mono">${formatCryptoNum(item.curr_cpr.cpr_bot)}</span> • <span class="text-purple-400 font-bold font-mono">${formatCryptoNum(item.curr_cpr.p)}</span> • <span class="text-blue-400 font-mono">${formatCryptoNum(item.curr_cpr.cpr_top)}</span></div>
-                                <div class="text-[10px] text-amber-400 font-sans mt-0.5 font-medium">${item.target_label} (Width: ${(item.cpr_width_pct !== undefined ? item.cpr_width_pct : item.curr_cpr.cpr_width_pct)}%)</div>
-                            </td>
-                            <td class="py-3.5 px-4 text-[11px]">
-                                <div class="text-slate-400 font-mono"><span class="text-slate-500">${formatCryptoNum(item.prev_cpr.cpr_bot)}</span> • <span class="text-slate-400">${formatCryptoNum(item.prev_cpr.p)}</span> • <span class="text-slate-500">${formatCryptoNum(item.prev_cpr.cpr_top)}</span></div>
-                                <div class="text-[10px] text-slate-500 font-sans mt-0.5">${item.base_label}</div>
-                            </td>
-                            <td class="py-3.5 px-4 text-[11px]">
-                                <div><span class="text-slate-400 font-sans">${item.trigger_name_h}:</span> <span class="text-emerald-400 font-bold font-mono">${formatCryptoNum(item.pm_high)}</span></div>
-                                <div><span class="text-slate-400 font-sans">${item.trigger_name_l}:</span> <span class="text-rose-400 font-bold font-mono">${formatCryptoNum(item.pm_low)}</span></div>
-                            </td>
-                            <td class="py-3.5 px-4">
-                                <div class="${item.position_status.class} text-[11px] font-sans">${item.position_status.text}</div>
-                                <div class="text-[10px] text-slate-500 font-sans mt-0.5">R1: ${formatCryptoNum(item.curr_cpr.r1)} • S1: ${formatCryptoNum(item.curr_cpr.s1)}</div>
-                            </td>
-                            <td class="py-3.5 px-4 text-center">
-                                <div class="flex items-center justify-center gap-1.5">
-                                    <a href="https://www.tradingview.com/chart/?symbol=${tvExchange}:${currentMarket === 'crypto_coinbase' ? `${item.clean_symbol}USD` : `${item.clean_symbol}USDT`}" target="_blank" rel="noopener" class="px-2 py-1 rounded-lg bg-navy-800 hover:bg-sky-600 hover:text-white text-slate-300 font-sans text-xs transition border border-navy-700 shadow font-semibold" title="Open TradingView">
-                                        TV ↗
-                                    </a>
-                                    <button onclick="openChart('${item.symbol}')" class="px-2.5 py-1 rounded-lg bg-navy-800 hover:bg-amber-500 hover:text-black text-slate-200 font-sans text-xs transition border border-navy-700 shadow font-semibold">
-                                        View
-                                    </button>
-                                </div>
-                            </td>
-                        </tr>
-                    `;
-                }
-
                 return `
                     <tr class="hover:bg-navy-800/80 transition group">
                         <td class="py-3.5 px-4">
-                            <div class="font-bold text-white text-sm tracking-tight">${item.clean_symbol}</div>
-                            <div class="text-[10px] text-slate-500 font-sans">${item.symbol}</div>
+                            <div class="font-bold text-white text-sm tracking-tight flex items-center gap-1.5">
+                                <span>${item.clean_symbol}</span>
+                                ${item.mc_formatted ? `<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">${item.mc_formatted}</span>` : ''}
+                            </div>
+                            <div class="text-[10px] text-slate-500 font-sans">${item.symbol} • ${exchangeBadge}</div>
                         </td>
                         <td class="py-3.5 px-4">
                             <div class="font-bold text-slate-100 font-mono">${formatCryptoNum(item.ltp)}</div>
                             <div class="${chgColor} text-[11px] font-sans font-medium">${chgSign}${formatCryptoNum(item.change)} (${chgSign}${item.change_pct}%)</div>
                         </td>
                         <td class="py-3.5 px-4">
-                            <span class="inline-flex items-center px-2.5 py-1 rounded-md text-[11px] font-semibold border ${item.rel_badge || item.quality_tag.badge} font-sans">
+                            <span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold border ${item.rel_badge || item.quality_tag.badge} font-sans">
                                 ${item.rel_icon || '⚡'} ${item.relationship || item.quality_tag.text}
                             </span>
-                            <div class="${item.position_status.class} text-[10px] font-sans mt-0.5">${item.position_status.text}</div>
+                            <div class="text-[10px] font-sans mt-0.5 ${item.compression_pct > 0 ? 'text-amber-400' : 'text-slate-400'}">${item.compression_pct > 0 ? `-${item.compression_pct}% Compressed` : `+${Math.abs(item.compression_pct)}% Wider`}</div>
                         </td>
                         <td class="py-3.5 px-4 text-[11px]">
                             <div class="text-slate-200 font-semibold"><span class="text-blue-400 font-mono">${formatCryptoNum(item.curr_cpr.cpr_bot)}</span> • <span class="text-purple-400 font-bold font-mono">${formatCryptoNum(item.curr_cpr.p)}</span> • <span class="text-blue-400 font-mono">${formatCryptoNum(item.curr_cpr.cpr_top)}</span></div>
-                            <div class="text-[10px] text-amber-400 font-sans mt-0.5 font-medium">${item.target_label}</div>
+                            <div class="text-[10px] text-amber-400 font-sans mt-0.5 font-medium">${item.target_label} (Width: ${(item.cpr_width_pct !== undefined ? item.cpr_width_pct : item.curr_cpr.cpr_width_pct)}%)</div>
                         </td>
                         <td class="py-3.5 px-4 text-[11px]">
                             <div class="text-slate-400 font-mono"><span class="text-slate-500">${formatCryptoNum(item.prev_cpr.cpr_bot)}</span> • <span class="text-slate-400">${formatCryptoNum(item.prev_cpr.p)}</span> • <span class="text-slate-500">${formatCryptoNum(item.prev_cpr.cpr_top)}</span></div>
@@ -1763,14 +1433,19 @@ DASHBOARD_HTML = """
                             <div><span class="text-slate-400 font-sans">${item.trigger_name_h}:</span> <span class="text-emerald-400 font-bold font-mono">${formatCryptoNum(item.pm_high)}</span></div>
                             <div><span class="text-slate-400 font-sans">${item.trigger_name_l}:</span> <span class="text-rose-400 font-bold font-mono">${formatCryptoNum(item.pm_low)}</span></div>
                         </td>
-                        <td class="py-3.5 px-4 text-[11px]">
-                            <div><span class="text-slate-400 font-sans">R1:</span> <span class="text-emerald-400 font-medium">${formatCryptoNum(item.curr_cpr.r1)}</span></div>
-                            <div><span class="text-slate-400 font-sans">S1:</span> <span class="text-rose-400 font-medium">${formatCryptoNum(item.curr_cpr.s1)}</span></div>
+                        <td class="py-3.5 px-4">
+                            <div class="${item.position_status.class} text-[11px] font-sans">${item.position_status.text}</div>
+                            <div class="text-[10px] text-slate-500 font-sans mt-0.5">R1: ${formatCryptoNum(item.curr_cpr.r1)} • S1: ${formatCryptoNum(item.curr_cpr.s1)}</div>
                         </td>
                         <td class="py-3.5 px-4 text-center">
-                            <button onclick="openChart('${item.symbol}')" class="px-3 py-1 rounded-lg bg-navy-800 hover:bg-amber-500 hover:text-black text-slate-200 font-sans text-xs transition border border-navy-700 shadow font-semibold">
-                                View
-                            </button>
+                            <div class="flex items-center justify-center gap-1.5">
+                                <a href="https://www.tradingview.com/chart/?symbol=${tvExchange}:${currentMarket === 'crypto_coinbase' ? `${item.clean_symbol}USD` : `${item.clean_symbol}USDT`}" target="_blank" rel="noopener" class="px-2 py-1 rounded-lg bg-navy-800 hover:bg-sky-600 hover:text-white text-slate-300 font-sans text-xs transition border border-navy-700 shadow font-semibold" title="Open TradingView">
+                                    TV ↗
+                                </a>
+                                <button onclick="openChart('${item.symbol}')" class="px-2.5 py-1 rounded-lg bg-navy-800 hover:bg-amber-500 hover:text-black text-slate-200 font-sans text-xs transition border border-navy-700 shadow font-semibold">
+                                    View
+                                </button>
+                            </div>
                         </td>
                     </tr>
                 `;
@@ -1943,21 +1618,16 @@ def api_scan():
         mode = request.args.get("mode", "developing")
         min_mc = float(request.args.get("min_mc", 0))
 
-        if market == "crypto_all":
-            # On serverless environments, limit max_coins to prevent function execution timeout
-            is_serverless = os.environ.get("VERCEL") == "1" or os.environ.get("AWS_LAMBDA_FUNCTION_NAME") is not None
-            max_limit = 650 if is_serverless else 800
-            symbols = BINANCE_MGR.get_binance_symbols(min_quote_vol=min_mc, max_coins=max_limit)
-        elif market == "crypto_coinbase":
-            is_serverless = os.environ.get("VERCEL") == "1" or os.environ.get("AWS_LAMBDA_FUNCTION_NAME") is not None
+        is_serverless = os.environ.get("VERCEL") == "1" or os.environ.get("AWS_LAMBDA_FUNCTION_NAME") is not None
+        if market == "crypto_coinbase":
             max_limit = 350 if is_serverless else 450
             symbols = COINBASE_MGR.get_coinbase_symbols(min_quote_vol=min_mc, max_coins=max_limit)
         else:
-            watchlist_info = WATCHLISTS.get(market, WATCHLISTS["india_all"])
-            symbols = watchlist_info["symbols"]
+            max_limit = 650 if is_serverless else 800
+            symbols = BINANCE_MGR.get_binance_symbols(min_quote_vol=min_mc, max_coins=max_limit)
         
         results = []
-        workers = 35 if (market in ["crypto_all", "crypto_coinbase"]) else 10
+        workers = 35
         with ThreadPoolExecutor(max_workers=workers) as executor:
             futures = [executor.submit(process_cpr_setup, sym, timeframe, mode) for sym in symbols]
             for f in futures:
@@ -1990,7 +1660,7 @@ if __name__ == "__main__":
     import os
     port = int(os.environ.get("PORT", 5001))
     print("\n=======================================================")
-    print("🚀 PIVOT BOSS - INSIDE VALUE CPR TERMINAL")
+    print("🚀 PIVOT BOSS - CRYPTO INSIDE VALUE TERMINAL")
     print(f"👉 Open Dashboard: http://127.0.0.1:{port}")
     print("=======================================================\n")
     app.run(host="0.0.0.0", port=port, debug=False)
