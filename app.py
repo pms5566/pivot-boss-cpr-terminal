@@ -445,229 +445,7 @@ class CoinbaseAPIManager:
 
 COINBASE_MGR = CoinbaseAPIManager()
 
-class DexScreenerAPIManager:
-    def __init__(self):
-        self.session = requests.Session()
-        self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
-            'Accept': 'application/json'
-        })
-        adapter = requests.adapters.HTTPAdapter(pool_connections=50, pool_maxsize=50, max_retries=1)
-        self.session.mount('https://', adapter)
-        self.session.mount('http://', adapter)
-        self.pairs_cache = []
-        self.pairs_time = 0
-        self.pair_meta = {}
-        self.bars_cache = {}
-        self.chain_map = {
-            'solana': 'solana',
-            'base': 'base',
-            'ethereum': 'eth',
-            'bsc': 'bsc',
-            'arbitrum': 'arbitrum'
-        }
 
-    def format_usd(self, val):
-        if val is None or val <= 0:
-            return None
-        if val >= 1_000_000_000:
-            return f"${val / 1_000_000_000:.2f}B"
-        if val >= 1_000_000:
-            return f"${val / 1_000_000:.1f}M"
-        if val >= 1_000:
-            return f"${val / 1_000:.0f}K"
-        return f"${val:.1f}"
-
-    def get_dex_symbols(self, min_quote_vol=0, max_coins=200):
-        now = time.time()
-        if self.pairs_cache and (now - self.pairs_time < 120):
-            filtered = [s for s in self.pairs_cache if self.pair_meta.get(s, {}).get('volume24h', 0) >= min_quote_vol]
-            return filtered[:max_coins]
-
-        discovered = {}
-
-        def _fetch_top_boosts():
-            sub = {}
-            try:
-                r = self.session.get("https://api.dexscreener.com/token-boosts/top/v1", timeout=3)
-                if r.status_code == 200:
-                    boosts = r.json()
-                    if isinstance(boosts, list):
-                        token_addrs = [b.get("tokenAddress") for b in boosts if b.get("tokenAddress")][:15]
-                        if token_addrs:
-                            tokens_param = ",".join(token_addrs)
-                            r2 = self.session.get(f"https://api.dexscreener.com/latest/dex/tokens/{tokens_param}", timeout=3)
-                            if r2.status_code == 200:
-                                for p in r2.json().get("pairs", []):
-                                    addr = p.get("pairAddress")
-                                    chain = p.get("chainId")
-                                    if addr and chain in self.chain_map:
-                                        vol = float(p.get("volume", {}).get("h24") or 0)
-                                        liq = float(p.get("liquidity", {}).get("usd") or 0)
-                                        if liq >= 25000 and vol >= 40000:
-                                            key = f"dex:{chain}:{addr}"
-                                            b_sym = p.get("baseToken", {}).get("symbol", "TOKEN")
-                                            q_sym = p.get("quoteToken", {}).get("symbol", "USD")
-                                            sub[key] = {
-                                                "key": key, "chain": chain, "dex": p.get("dexId", "dex"),
-                                                "pairAddress": addr, "name": f"{b_sym}/{q_sym}", "clean": b_sym,
-                                                "volume24h": vol, "liquidity": liq, "dex_url": p.get("url") or f"https://dexscreener.com/{chain}/{addr}"
-                                            }
-            except Exception:
-                pass
-            return sub
-
-        def _fetch_search(query):
-            sub = {}
-            try:
-                r = self.session.get(f"https://api.dexscreener.com/latest/dex/search?q={query}", timeout=3)
-                if r.status_code == 200:
-                    for p in r.json().get("pairs", []):
-                        addr = p.get("pairAddress")
-                        chain = p.get("chainId")
-                        if addr and chain in self.chain_map:
-                            vol = float(p.get("volume", {}).get("h24") or 0)
-                            liq = float(p.get("liquidity", {}).get("usd") or 0)
-                            if liq >= 25000 and vol >= 40000:
-                                key = f"dex:{chain}:{addr}"
-                                b_sym = p.get("baseToken", {}).get("symbol", "TOKEN")
-                                q_sym = p.get("quoteToken", {}).get("symbol", "USD")
-                                sub[key] = {
-                                    "key": key, "chain": chain, "dex": p.get("dexId", "dex"),
-                                    "pairAddress": addr, "name": f"{b_sym}/{q_sym}", "clean": b_sym,
-                                    "volume24h": vol, "liquidity": liq, "dex_url": p.get("url") or f"https://dexscreener.com/{chain}/{addr}"
-                                }
-            except Exception:
-                pass
-            return sub
-
-        def _fetch_gecko_trending(net):
-            sub = {}
-            try:
-                r = self.session.get(f"https://api.geckoterminal.com/api/v2/networks/{net}/trending_pools", timeout=3)
-                if r.status_code == 200:
-                    for p in r.json().get("data", []):
-                        attr = p.get("attributes", {})
-                        addr = attr.get("address")
-                        if not addr: continue
-                        chain_ds = "ethereum" if net == "eth" else net
-                        name = attr.get("name", "TOKEN")
-                        clean = name.split("/")[0].strip()
-                        vol = float(attr.get("volume_usd", {}).get("h24") or 0)
-                        liq = float(attr.get("reserve_in_usd") or 0)
-                        if liq >= 25000 and vol >= 40000:
-                            key = f"dex:{chain_ds}:{addr}"
-                            sub[key] = {
-                                "key": key, "chain": chain_ds, "dex": "dex",
-                                "pairAddress": addr, "name": name, "clean": clean,
-                                "volume24h": vol, "liquidity": liq, "dex_url": f"https://dexscreener.com/{chain_ds}/{addr}"
-                            }
-            except Exception:
-                pass
-            return sub
-
-        with ThreadPoolExecutor(max_workers=6) as ex:
-            futures = [
-                ex.submit(_fetch_top_boosts),
-                ex.submit(_fetch_search, "SOL"),
-                ex.submit(_fetch_search, "USDC"),
-                ex.submit(_fetch_search, "ETH"),
-                ex.submit(_fetch_gecko_trending, "solana"),
-                ex.submit(_fetch_gecko_trending, "base")
-            ]
-            for f in futures:
-                try:
-                    discovered.update(f.result())
-                except Exception:
-                    pass
-
-        sorted_keys = sorted(discovered.keys(), key=lambda k: discovered[k]["volume24h"], reverse=True)
-        # Prioritize established multi-month liquid pairs so we stay within rate limits and guarantee full daily candles
-        established_priority = [
-            "dex:base:0xc01c2800186207270BA5386532a8173C5b7dD194",
-            "dex:bsc:0x0f338Ec12d3f7C3D77A4B9fcC1f95F3FB6AD0EA6",
-            "dex:bsc:0xD0e226f674bBf064f54aB47F42473fF80DB98CBA",
-            "dex:base:0x868Eed6BAD4bD368cd053b766F84CC727697589A",
-            "dex:base:0x16c70f04c3080a127486cdf5a4c33c066bbf47c3"
-        ]
-        ordered_keys = [k for k in established_priority if k in discovered] + [k for k in sorted_keys if k not in established_priority]
-
-        self.pair_meta = discovered
-        self.pairs_cache = ordered_keys
-        self.pairs_time = now
-
-        filtered = [s for s in ordered_keys if discovered[s]["volume24h"] >= min_quote_vol]
-        return filtered[:max_coins]
-
-    def fetch_market_bars(self, dex_symbol):
-        parts = dex_symbol.split(":")
-        if len(parts) < 3:
-            return [], []
-        chain = parts[1]
-        pair_addr = parts[2]
-        gt_network = self.chain_map.get(chain, chain)
-
-        now = time.time()
-        if dex_symbol in self.bars_cache:
-            ts, m_bars, d_bars = self.bars_cache[dex_symbol]
-            if now - ts < 600:
-                return m_bars, d_bars
-
-        raw_candles = []
-        try:
-            url = f"https://api.geckoterminal.com/api/v2/networks/{gt_network}/pools/{pair_addr}/ohlcv/day?limit=15"
-            r = self.session.get(url, timeout=2.5)
-            if r.status_code == 200:
-                raw_candles = r.json().get("data", {}).get("attributes", {}).get("ohlcv_list", [])
-        except Exception:
-            pass
-
-        if not raw_candles or len(raw_candles) < 3:
-            # Fall back to stale cache if rate-limited
-            if dex_symbol in self.bars_cache:
-                return self.bars_cache[dex_symbol][1], self.bars_cache[dex_symbol][2]
-            return [], []
-
-        raw_candles.sort(key=lambda x: x[0])
-
-        daily_candles = []
-        for c in raw_candles:
-            dt = datetime.datetime.fromtimestamp(c[0], tz=datetime.timezone.utc).strftime("%Y-%m-%d")
-            daily_candles.append({
-                "date": dt,
-                "time": int(c[0]),
-                "open": float(c[1]),
-                "high": float(c[2]),
-                "low": float(c[3]),
-                "close": float(c[4]),
-                "volume": float(c[5])
-            })
-
-        monthly_dict = {}
-        for c in daily_candles:
-            mo_key = c['date'][:7]
-            if mo_key not in monthly_dict:
-                monthly_dict[mo_key] = {
-                    'month': mo_key,
-                    'date': c['date'],
-                    'time': c['time'],
-                    'open': c['open'],
-                    'high': c['high'],
-                    'low': c['low'],
-                    'close': c['close'],
-                    'volume': c['volume']
-                }
-            else:
-                monthly_dict[mo_key]['high'] = max(monthly_dict[mo_key]['high'], c['high'])
-                monthly_dict[mo_key]['low'] = min(monthly_dict[mo_key]['low'], c['low'])
-                monthly_dict[mo_key]['close'] = c['close']
-                monthly_dict[mo_key]['volume'] += c['volume']
-
-        monthly_bars = [monthly_dict[k] for k in sorted(monthly_dict.keys())]
-        self.bars_cache[dex_symbol] = (now, monthly_bars, daily_candles)
-        return monthly_bars, daily_candles
-
-DEXSCREENER_MGR = DexScreenerAPIManager()
 
 def calculate_cpr_and_pivots(h, l, c, decimals=2):
     p = (h + l + c) / 3.0
@@ -709,10 +487,7 @@ def calculate_cpr_and_pivots(h, l, c, decimals=2):
 def process_cpr_setup(symbol, timeframe="monthly", mode="active"):
     """Inside Value CPR calculation following Frank Ochoa's Master Framework"""
     need_monthly = timeframe in ["monthly", "quarterly"]
-    is_dex = symbol.startswith("dex:")
-    if is_dex:
-        monthly_bars, daily_candles = DEXSCREENER_MGR.fetch_market_bars(symbol)
-    elif symbol.endswith("-USD"):
+    if symbol.endswith("-USD"):
         monthly_bars, daily_candles = COINBASE_MGR.fetch_market_bars(symbol)
         if not daily_candles:
             monthly_bars, daily_candles = BINANCE_MGR.fetch_market_bars(symbol, need_monthly=need_monthly)
@@ -978,48 +753,24 @@ def process_cpr_setup(symbol, timeframe="monthly", mode="active"):
             "text": f"+{dist_to_h}% to Buy • -{dist_to_l}% to Sell"
         }
 
-    if is_dex:
-        meta = DEXSCREENER_MGR.pair_meta.get(symbol, {})
-        clean_symbol = meta.get("clean") or symbol.split(":")[-1][:6]
-        display_name = meta.get("name") or clean_symbol
-        chain = meta.get("chain", "solana")
-        dex = meta.get("dex", "dex")
-        dex_url = meta.get("dex_url") or f"https://dexscreener.com/{chain}/{symbol.split(':')[-1]}"
-        vol_usd = meta.get("volume24h", 0)
-        liq_usd = meta.get("liquidity", 0)
-        market_cap = vol_usd
-        mc_formatted = (DEXSCREENER_MGR.format_usd(vol_usd) + " 24h Vol") if vol_usd > 0 else None
-        liq_formatted = (DEXSCREENER_MGR.format_usd(liq_usd) + " Liq") if liq_usd > 0 else None
-    else:
-        clean_symbol = symbol.replace("USDT", "").replace("USDC", "").replace("-USD", "")
-        display_name = symbol
-        chain = None
-        dex = None
-        dex_url = None
-        liq_usd = 0
-        liq_formatted = None
-        if symbol.endswith("-USD"):
-            vol_usd = COINBASE_MGR.get_spot_volume(symbol)
-            if not vol_usd:
-                vol_usd = BINANCE_MGR.get_spot_volume(symbol)
-            mc_formatted = (COINBASE_MGR.format_usd(vol_usd) + " 24h Vol") if vol_usd > 0 else None
-        else:
+    clean_symbol = symbol.replace("USDT", "").replace("USDC", "").replace("-USD", "")
+    display_name = symbol
+    if symbol.endswith("-USD"):
+        vol_usd = COINBASE_MGR.get_spot_volume(symbol)
+        if not vol_usd:
             vol_usd = BINANCE_MGR.get_spot_volume(symbol)
-            if not vol_usd:
-                vol_usd = COINBASE_MGR.get_spot_volume(symbol)
-            mc_formatted = (BINANCE_MGR.format_usd(vol_usd) + " 24h Vol") if vol_usd > 0 else None
-        market_cap = vol_usd
+        mc_formatted = (COINBASE_MGR.format_usd(vol_usd) + " 24h Vol") if vol_usd > 0 else None
+    else:
+        vol_usd = BINANCE_MGR.get_spot_volume(symbol)
+        if not vol_usd:
+            vol_usd = COINBASE_MGR.get_spot_volume(symbol)
+        mc_formatted = (BINANCE_MGR.format_usd(vol_usd) + " 24h Vol") if vol_usd > 0 else None
+    market_cap = vol_usd
 
     return {
         "symbol": symbol,
         "clean_symbol": clean_symbol,
         "display_name": display_name,
-        "is_dex": is_dex,
-        "chain": chain,
-        "dex": dex,
-        "dex_url": dex_url,
-        "liquidity": liq_usd,
-        "liq_formatted": liq_formatted,
         "market_cap": market_cap,
         "mc_formatted": mc_formatted,
         "strategy": "inside_value",
@@ -1102,7 +853,7 @@ DASHBOARD_HTML = """
                         PIVOT BOSS <span class="text-amber-400">COMPRESSION ENGINE</span>
                         <span id="header-mode-badge" class="px-2 py-0.5 rounded text-[10px] bg-amber-500/20 text-amber-300 font-mono font-medium border border-amber-500/30">DAILY • DEVELOPING</span>
                     </h1>
-                    <p class="text-xs text-slate-400">Institutional Inside Value, Narrow CPR & Breakout Scanner (Binance, Coinbase & DEX Screener)</p>
+                    <p class="text-xs text-slate-400">Institutional Inside Value, Narrow CPR & Breakout Scanner (Binance & Coinbase)</p>
                 </div>
             </div>
 
@@ -1136,16 +887,13 @@ DASHBOARD_HTML = """
                     </button>
                 </div>
 
-                <!-- Market Selector: Binance vs Coinbase vs DEX Screener -->
+                <!-- Market Selector: Binance vs Coinbase -->
                 <div class="flex bg-navy-950 p-1 rounded-xl border border-navy-700 text-xs font-medium shadow-inner">
                     <button onclick="setMarket('crypto_all')" id="btn-crypto" class="px-3 py-1.5 rounded-lg transition-all text-white bg-indigo-600 font-semibold shadow">
                         🪙 Binance
                     </button>
                     <button onclick="setMarket('crypto_coinbase')" id="btn-coinbase" class="px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white">
                         🔵 Coinbase
-                    </button>
-                    <button onclick="setMarket('crypto_dexscreener')" id="btn-dexscreener" class="px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white">
-                        🦅 DEX Screener
                     </button>
                 </div>
 
@@ -1212,7 +960,7 @@ DASHBOARD_HTML = """
                         <button onclick="setQuickFilter('megacoil')" id="qf-megacoil" class="px-2.5 py-1 rounded-lg text-slate-400 hover:text-white">💥 MegaCoil (&gt;70%)</button>
                     </div>
                     <input type="text" id="search-input" onkeyup="renderTable()" placeholder="Search symbol..." class="bg-navy-950 border border-navy-700 text-slate-200 text-xs rounded-xl px-3.5 py-1.5 focus:outline-none focus:border-amber-400 w-36 transition shadow-inner">
-                    <button onclick="copyWatchlist()" id="btn-copy-tv" class="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-navy-900 hover:bg-navy-800 text-sky-400 font-semibold text-xs border border-sky-500/30 transition shadow active:scale-95" title="Copy symbols for TradingView / DEX watchlist">
+                    <button onclick="copyWatchlist()" id="btn-copy-tv" class="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-navy-900 hover:bg-navy-800 text-sky-400 font-semibold text-xs border border-sky-500/30 transition shadow active:scale-95" title="Copy symbols for TradingView watchlist">
                         <span>📋 Copy Watchlist</span>
                     </button>
                 </div>
@@ -1527,8 +1275,7 @@ DASHBOARD_HTML = """
             bannerTitle.innerText = `${tfName} ${modeName} Volatility Compression Breakout Engine:`;
 
             const isCoinbase = currentMarket === 'crypto_coinbase';
-            const isDex = currentMarket === 'crypto_dexscreener';
-            const exchangeName = isDex ? 'DEX Screener' : (isCoinbase ? 'Coinbase' : 'Binance');
+            const exchangeName = isCoinbase ? 'Coinbase' : 'Binance';
             
             if (currentQuickFilter === 'combo') {
                 tableTitle.innerText = `🔥 Holy Grail Double Compression: Inside + Narrow CPRs (${exchangeName} • ${tfName} ${modeName})`;
@@ -1549,15 +1296,12 @@ DASHBOARD_HTML = """
             } else {
                 tableTitle.innerText = `⚡ Verified Compression Terminal: Inside Value • Narrow CPR • Combos (${exchangeName} • ${tfName} ${modeName})`;
                 bannerTitle.innerText = `${tfName} ${modeName} Volatility Compression Breakout Engine:`;
-                bannerDesc.innerHTML = isDex 
-                    ? `Scanning verified on-chain DEX pairs via <strong>DEX Screener & GeckoTerminal</strong> across Solana, Base, and Ethereum. Showing only verified compression coils.`
-                    : `Showing verified <strong>Inside Value CPRs</strong>, <strong>Narrow CPRs</strong>, and <strong>Holy Grail Double Combos</strong>. All non-compression noise has been filtered out.`;
+                bannerDesc.innerHTML = `Showing verified <strong>Inside Value CPRs</strong>, <strong>Narrow CPRs</strong>, and <strong>Holy Grail Double Combos</strong>. All non-compression noise has been filtered out.`;
             }
 
             // Market selector styles
             const btnCrypto = document.getElementById('btn-crypto');
             const btnCoinbase = document.getElementById('btn-coinbase');
-            const btnDex = document.getElementById('btn-dexscreener');
             if (btnCrypto) {
                 btnCrypto.className = currentMarket === 'crypto_all' 
                     ? 'px-3 py-1.5 rounded-lg transition-all text-white bg-indigo-600 font-bold shadow'
@@ -1568,15 +1312,10 @@ DASHBOARD_HTML = """
                     ? 'px-3 py-1.5 rounded-lg transition-all text-white bg-indigo-600 font-bold shadow'
                     : 'px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white';
             }
-            if (btnDex) {
-                btnDex.className = currentMarket === 'crypto_dexscreener' 
-                    ? 'px-3 py-1.5 rounded-lg transition-all text-white bg-teal-600 font-bold shadow'
-                    : 'px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white';
-            }
 
             // Volume Controls
             const lbl = document.getElementById('btn-mc-all-label');
-            if (lbl) lbl.innerText = isDex ? '🦅 DEX All (100+)' : (isCoinbase ? '🔵 Coinbase All (400+)' : '🌐 Binance All (700+)');
+            if (lbl) lbl.innerText = isCoinbase ? '🔵 Coinbase All' : '🌐 Binance All';
             ['all', '5m', '50m', '500m'].forEach(k => {
                 const btn = document.getElementById(`btn-mc-${k}`);
                 if (btn) btn.className = 'px-2.5 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white';
@@ -1622,9 +1361,8 @@ DASHBOARD_HTML = """
             const icon = document.getElementById('refresh-icon');
             if (icon) icon.classList.add('animate-spin');
 
-            const isDex = currentMarket === 'crypto_dexscreener';
             const isCoinbase = currentMarket === 'crypto_coinbase';
-            const scanTarget = isDex ? 'DEX Screener (Solana • Base • ETH)' : (isCoinbase ? 'Coinbase' : 'Binance');
+            const scanTarget = isCoinbase ? 'Coinbase' : 'Binance';
 
             let elapsed = 0;
             tbody.innerHTML = `
@@ -1750,12 +1488,7 @@ DASHBOARD_HTML = """
             const tbody = document.getElementById('table-body');
             
             if (filtered.length === 0) {
-                const emptyMsg = isDex
-                    ? `No on-chain DEX tokens currently meet strict <strong>Inside Value</strong> or <strong>Narrow CPR</strong> compression criteria.<br>
-                       <span class="text-xs text-amber-300 mt-2 block font-normal">
-                         On-chain DEX memecoins typically experience massive directional trend expansion. Switch to <strong>🪙 Binance</strong> or <strong>🔵 Coinbase</strong> for institutional Inside Value and Narrow CPR coils.
-                       </span>`
-                    : `No matching compression setups found for this filter.<br>
+                const emptyMsg = `No matching compression setups found for this filter.<br>
                        <span class="text-xs text-amber-300 mt-2 block font-normal">
                          Try clicking <strong>🌐 All Setups</strong> or switching between <strong>🔮 Developing</strong> and <strong>📍 Active</strong>.
                        </span>`;
@@ -1775,31 +1508,6 @@ DASHBOARD_HTML = """
                 const chgSign = item.change >= 0 ? '+' : '';
 
                 let pairSubtitle = `${item.symbol} • ${exchangeBadge}`;
-                let chainBadgeHtml = '';
-                if (item.is_dex) {
-                    const c = (item.chain || '').toLowerCase();
-                    let chainColor = 'bg-purple-500/20 text-purple-300 border-purple-500/30';
-                    let chainName = 'Solana';
-                    if (c.includes('base')) {
-                        chainColor = 'bg-blue-500/20 text-blue-300 border-blue-500/30';
-                        chainName = 'Base';
-                    } else if (c.includes('eth')) {
-                        chainColor = 'bg-indigo-500/20 text-indigo-300 border-indigo-500/30';
-                        chainName = 'ETH';
-                    } else if (c.includes('bsc')) {
-                        chainColor = 'bg-yellow-500/20 text-yellow-300 border-yellow-500/30';
-                        chainName = 'BSC';
-                    } else if (c.includes('arb')) {
-                        chainColor = 'bg-sky-500/20 text-sky-300 border-sky-500/30';
-                        chainName = 'Arbitrum';
-                    }
-                    chainBadgeHtml = `<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold border ${chainColor}">${chainName}</span>`;
-                    pairSubtitle = `${item.display_name || item.clean_symbol} • DEX`;
-                }
-
-                const liqBadge = item.liq_formatted 
-                    ? `<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">${item.liq_formatted}</span>` 
-                    : '';
                 const volBadge = item.mc_formatted 
                     ? `<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">${item.mc_formatted}</span>` 
                     : '';
@@ -1809,9 +1517,7 @@ DASHBOARD_HTML = """
                         <td class="py-3.5 px-4">
                             <div class="font-bold text-white text-sm tracking-tight flex items-center gap-1.5">
                                 <span>${item.clean_symbol}</span>
-                                ${chainBadgeHtml}
                                 ${volBadge}
-                                ${liqBadge}
                             </div>
                             <div class="text-[10px] text-slate-500 font-sans">${pairSubtitle}</div>
                         </td>
@@ -1850,15 +1556,9 @@ DASHBOARD_HTML = """
                         </td>
                         <td class="py-3.5 px-4 text-center">
                             <div class="flex items-center justify-center gap-1.5">
-                                ${item.is_dex ? `
-                                    <a href="${item.dex_url || `https://dexscreener.com/${item.chain}/${item.symbol.split(':')[2]}`}" target="_blank" rel="noopener" class="px-2 py-1 rounded-lg bg-teal-900/60 hover:bg-teal-600 hover:text-white text-teal-300 font-sans text-xs transition border border-teal-500/40 shadow font-semibold" title="Open on DEX Screener">
-                                        🦅 DEX ↗
-                                    </a>
-                                ` : `
-                                    <a href="https://www.tradingview.com/chart/?symbol=${tvExchange}:${currentMarket === 'crypto_coinbase' ? `${item.clean_symbol}USD` : `${item.clean_symbol}USDT`}" target="_blank" rel="noopener" class="px-2 py-1 rounded-lg bg-navy-800 hover:bg-sky-600 hover:text-white text-slate-300 font-sans text-xs transition border border-navy-700 shadow font-semibold" title="Open TradingView">
-                                        TV ↗
-                                    </a>
-                                `}
+                                <a href="https://www.tradingview.com/chart/?symbol=${tvExchange}:${currentMarket === 'crypto_coinbase' ? `${item.clean_symbol}USD` : `${item.clean_symbol}USDT`}" target="_blank" rel="noopener" class="px-2 py-1 rounded-lg bg-navy-800 hover:bg-sky-600 hover:text-white text-slate-300 font-sans text-xs transition border border-navy-700 shadow font-semibold" title="Open TradingView">
+                                    TV ↗
+                                </a>
                                 <button onclick="openChart('${item.symbol}')" class="px-2.5 py-1 rounded-lg bg-navy-800 hover:bg-amber-500 hover:text-black text-slate-200 font-sans text-xs transition border border-navy-700 shadow font-semibold">
                                     View
                                 </button>
@@ -2004,15 +1704,10 @@ DASHBOARD_HTML = """
 
         function copyWatchlist() {
             if (!scanData || scanData.length === 0) return;
-            let text = '';
-            if (currentMarket === 'crypto_dexscreener') {
-                text = scanData.map(i => i.dex_url || `https://dexscreener.com/${i.chain}/${i.symbol.split(':')[2]}`).join(String.fromCharCode(10));
-            } else {
-                text = scanData.map(i => {
-                    if (currentMarket === 'crypto_coinbase') return `COINBASE:${i.clean_symbol}USD`;
-                    return `BINANCE:${i.symbol}`;
-                }).join(', ');
-            }
+            const text = scanData.map(i => {
+                if (currentMarket === 'crypto_coinbase') return `COINBASE:${i.clean_symbol}USD`;
+                return `BINANCE:${i.symbol}`;
+            }).join(', ');
             navigator.clipboard.writeText(text).then(() => {
                 const btn = document.getElementById('btn-copy-tv');
                 if (btn) {
@@ -2112,11 +1807,7 @@ def api_scan():
                 return jsonify(cached_payload)
 
         is_serverless = os.environ.get("VERCEL") == "1" or os.environ.get("AWS_LAMBDA_FUNCTION_NAME") is not None
-        if market == "crypto_dexscreener":
-            max_limit = 30 if is_serverless else 60
-            symbols = DEXSCREENER_MGR.get_dex_symbols(min_quote_vol=min_mc, max_coins=max_limit)
-            workers = 12
-        elif market == "crypto_coinbase":
+        if market == "crypto_coinbase":
             max_limit = 120 if is_serverless else 250
             symbols = COINBASE_MGR.get_coinbase_symbols(min_quote_vol=min_mc, max_coins=max_limit)
             workers = 25
