@@ -130,7 +130,7 @@ class BinanceAPIManager:
         sorted_symbols = [p for p in priority if p in sym_list] + [s for s in sym_list if s not in priority]
         return sorted_symbols[:max_coins]
 
-    def fetch_market_bars(self, symbol):
+    def fetch_market_bars(self, symbol, need_monthly=False):
         sym = symbol.replace("-USD", "USDT")
         if not sym.endswith("USDT") and not sym.endswith("USDC"):
             sym = sym + "USDT"
@@ -139,12 +139,13 @@ class BinanceAPIManager:
         if sym in self.bars_cache:
             ts, m_bars, d_bars = self.bars_cache[sym]
             if now - ts < 60:
-                return m_bars, d_bars
+                if not need_monthly or (need_monthly and m_bars):
+                    return m_bars, d_bars
 
         # Daily bars
         d_raw = []
         try:
-            r_d = self.session.get(f"https://data-api.binance.vision/api/v3/klines?symbol={sym}&interval=1d&limit=120", timeout=4)
+            r_d = self.session.get(f"https://data-api.binance.vision/api/v3/klines?symbol={sym}&interval=1d&limit=120", timeout=3)
             data = r_d.json()
             if isinstance(data, list):
                 d_raw = data
@@ -153,7 +154,7 @@ class BinanceAPIManager:
 
         if not d_raw:
             try:
-                r_d = self.session.get(f"https://api.binance.com/api/v3/klines?symbol={sym}&interval=1d&limit=120", timeout=4)
+                r_d = self.session.get(f"https://api.binance.com/api/v3/klines?symbol={sym}&interval=1d&limit=120", timeout=3)
                 data = r_d.json()
                 if isinstance(data, list):
                     d_raw = data
@@ -176,43 +177,40 @@ class BinanceAPIManager:
                 "volume": float(b[5])
             })
 
-        # Monthly bars (24 months = 8 quarters)
-        m_raw = []
-        try:
-            r_m = self.session.get(f"https://data-api.binance.vision/api/v3/klines?symbol={sym}&interval=1M&limit=24", timeout=4)
-            data = r_m.json()
-            if isinstance(data, list):
-                m_raw = data
-        except Exception:
-            pass
-
-        if not m_raw:
+        monthly_bars = []
+        if need_monthly:
+            # Monthly bars (24 months = 8 quarters)
+            m_raw = []
             try:
-                r_m = self.session.get(f"https://api.binance.com/api/v3/klines?symbol={sym}&interval=1M&limit=24", timeout=4)
+                r_m = self.session.get(f"https://data-api.binance.vision/api/v3/klines?symbol={sym}&interval=1M&limit=24", timeout=3)
                 data = r_m.json()
                 if isinstance(data, list):
                     m_raw = data
             except Exception:
-                m_raw = []
-                if isinstance(data, list):
-                    m_raw = data
-            except Exception:
-                m_raw = []
+                pass
 
-        monthly_bars = []
-        if isinstance(m_raw, list):
-            for b in m_raw:
-                dt = datetime.datetime.fromtimestamp(b[0] / 1000.0, tz=datetime.timezone.utc).strftime("%Y-%m-%d")
-                monthly_bars.append({
-                    "date": dt,
-                    "month": dt[:7],
-                    "time": int(b[0] / 1000),
-                    "open": float(b[1]),
-                    "high": float(b[2]),
-                    "low": float(b[3]),
-                    "close": float(b[4]),
-                    "volume": float(b[5])
-                })
+            if not m_raw:
+                try:
+                    r_m = self.session.get(f"https://api.binance.com/api/v3/klines?symbol={sym}&interval=1M&limit=24", timeout=3)
+                    data = r_m.json()
+                    if isinstance(data, list):
+                        m_raw = data
+                except Exception:
+                    m_raw = []
+
+            if isinstance(m_raw, list):
+                for b in m_raw:
+                    dt = datetime.datetime.fromtimestamp(b[0] / 1000.0, tz=datetime.timezone.utc).strftime("%Y-%m-%d")
+                    monthly_bars.append({
+                        "date": dt,
+                        "month": dt[:7],
+                        "time": int(b[0] / 1000),
+                        "open": float(b[1]),
+                        "high": float(b[2]),
+                        "low": float(b[3]),
+                        "close": float(b[4]),
+                        "volume": float(b[5])
+                    })
 
         self.bars_cache[sym] = (now, monthly_bars, daily_candles)
         return monthly_bars, daily_candles
@@ -482,82 +480,47 @@ class DexScreenerAPIManager:
 
     def get_dex_symbols(self, min_quote_vol=0, max_coins=200):
         now = time.time()
-        if self.pairs_cache and (now - self.pairs_time < 90):
+        if self.pairs_cache and (now - self.pairs_time < 120):
             filtered = [s for s in self.pairs_cache if self.pair_meta.get(s, {}).get('volume24h', 0) >= min_quote_vol]
             return filtered[:max_coins]
 
         discovered = {}
 
-        # 1. Fetch trending pools from GeckoTerminal across Solana, Base, ETH
-        for net in ["solana", "base", "eth"]:
+        def _fetch_top_boosts():
+            sub = {}
             try:
-                r = self.session.get(f"https://api.geckoterminal.com/api/v2/networks/{net}/trending_pools", timeout=4)
+                r = self.session.get("https://api.dexscreener.com/token-boosts/top/v1", timeout=3)
                 if r.status_code == 200:
-                    for p in r.json().get("data", []):
-                        attr = p.get("attributes", {})
-                        addr = attr.get("address")
-                        if not addr:
-                            continue
-                        chain_ds = "ethereum" if net == "eth" else net
-                        name = attr.get("name", "TOKEN")
-                        clean = name.split("/")[0].strip()
-                        vol = float(attr.get("volume_usd", {}).get("h24") or 0)
-                        liq = float(attr.get("reserve_in_usd") or 0)
-                        if liq >= 25000 and vol >= 40000:
-                            key = f"dex:{chain_ds}:{addr}"
-                            discovered[key] = {
-                                "key": key,
-                                "chain": chain_ds,
-                                "dex": "dex",
-                                "pairAddress": addr,
-                                "name": name,
-                                "clean": clean,
-                                "volume24h": vol,
-                                "liquidity": liq,
-                                "dex_url": f"https://dexscreener.com/{chain_ds}/{addr}"
-                            }
+                    boosts = r.json()
+                    if isinstance(boosts, list):
+                        token_addrs = [b.get("tokenAddress") for b in boosts if b.get("tokenAddress")][:15]
+                        if token_addrs:
+                            tokens_param = ",".join(token_addrs)
+                            r2 = self.session.get(f"https://api.dexscreener.com/latest/dex/tokens/{tokens_param}", timeout=3)
+                            if r2.status_code == 200:
+                                for p in r2.json().get("pairs", []):
+                                    addr = p.get("pairAddress")
+                                    chain = p.get("chainId")
+                                    if addr and chain in self.chain_map:
+                                        vol = float(p.get("volume", {}).get("h24") or 0)
+                                        liq = float(p.get("liquidity", {}).get("usd") or 0)
+                                        if liq >= 25000 and vol >= 40000:
+                                            key = f"dex:{chain}:{addr}"
+                                            b_sym = p.get("baseToken", {}).get("symbol", "TOKEN")
+                                            q_sym = p.get("quoteToken", {}).get("symbol", "USD")
+                                            sub[key] = {
+                                                "key": key, "chain": chain, "dex": p.get("dexId", "dex"),
+                                                "pairAddress": addr, "name": f"{b_sym}/{q_sym}", "clean": b_sym,
+                                                "volume24h": vol, "liquidity": liq, "dex_url": p.get("url") or f"https://dexscreener.com/{chain}/{addr}"
+                                            }
             except Exception:
                 pass
+            return sub
 
-        # 2. Fetch top boosted / trending tokens on DexScreener
-        try:
-            r = self.session.get("https://api.dexscreener.com/token-boosts/top/v1", timeout=4)
-            if r.status_code == 200:
-                boosts = r.json()
-                if isinstance(boosts, list):
-                    token_addrs = [b.get("tokenAddress") for b in boosts if b.get("tokenAddress")][:20]
-                    if token_addrs:
-                        joined = ",".join(token_addrs)
-                        r2 = self.session.get(f"https://api.dexscreener.com/latest/dex/tokens/{joined}", timeout=4)
-                        if r2.status_code == 200:
-                            for p in r2.json().get("pairs", []):
-                                addr = p.get("pairAddress")
-                                chain = p.get("chainId")
-                                if addr and chain in self.chain_map:
-                                    vol = float(p.get("volume", {}).get("h24") or 0)
-                                    liq = float(p.get("liquidity", {}).get("usd") or 0)
-                                    if liq >= 25000 and vol >= 40000:
-                                        key = f"dex:{chain}:{addr}"
-                                        b_sym = p.get("baseToken", {}).get("symbol", "TOKEN")
-                                        q_sym = p.get("quoteToken", {}).get("symbol", "USD")
-                                        discovered[key] = {
-                                            "key": key,
-                                            "chain": chain,
-                                            "dex": p.get("dexId", "dex"),
-                                            "pairAddress": addr,
-                                            "name": f"{b_sym}/{q_sym}",
-                                            "clean": b_sym,
-                                            "volume24h": vol,
-                                            "liquidity": liq,
-                                            "dex_url": p.get("url") or f"https://dexscreener.com/{chain}/{addr}"
-                                        }
-        except Exception:
-            pass
-
-        # 3. Search high-volume pairs on DexScreener
-        for q in ["SOL", "USDC", "BASE", "ETH", "RAY"]:
+        def _fetch_search(query):
+            sub = {}
             try:
-                r = self.session.get(f"https://api.dexscreener.com/latest/dex/search?q={q}", timeout=4)
+                r = self.session.get(f"https://api.dexscreener.com/latest/dex/search?q={query}", timeout=3)
                 if r.status_code == 200:
                     for p in r.json().get("pairs", []):
                         addr = p.get("pairAddress")
@@ -565,24 +528,58 @@ class DexScreenerAPIManager:
                         if addr and chain in self.chain_map:
                             vol = float(p.get("volume", {}).get("h24") or 0)
                             liq = float(p.get("liquidity", {}).get("usd") or 0)
-                            if liq >= 30000 and vol >= 40000:
+                            if liq >= 25000 and vol >= 40000:
                                 key = f"dex:{chain}:{addr}"
-                                if key not in discovered:
-                                    b_sym = p.get("baseToken", {}).get("symbol", "TOKEN")
-                                    q_sym = p.get("quoteToken", {}).get("symbol", "USD")
-                                    discovered[key] = {
-                                        "key": key,
-                                        "chain": chain,
-                                        "dex": p.get("dexId", "dex"),
-                                        "pairAddress": addr,
-                                        "name": f"{b_sym}/{q_sym}",
-                                        "clean": b_sym,
-                                        "volume24h": vol,
-                                        "liquidity": liq,
-                                        "dex_url": p.get("url") or f"https://dexscreener.com/{chain}/{addr}"
-                                    }
+                                b_sym = p.get("baseToken", {}).get("symbol", "TOKEN")
+                                q_sym = p.get("quoteToken", {}).get("symbol", "USD")
+                                sub[key] = {
+                                    "key": key, "chain": chain, "dex": p.get("dexId", "dex"),
+                                    "pairAddress": addr, "name": f"{b_sym}/{q_sym}", "clean": b_sym,
+                                    "volume24h": vol, "liquidity": liq, "dex_url": p.get("url") or f"https://dexscreener.com/{chain}/{addr}"
+                                }
             except Exception:
                 pass
+            return sub
+
+        def _fetch_gecko_trending(net):
+            sub = {}
+            try:
+                r = self.session.get(f"https://api.geckoterminal.com/api/v2/networks/{net}/trending_pools", timeout=3)
+                if r.status_code == 200:
+                    for p in r.json().get("data", []):
+                        attr = p.get("attributes", {})
+                        addr = attr.get("address")
+                        if not addr: continue
+                        chain_ds = "ethereum" if net == "eth" else net
+                        name = attr.get("name", "TOKEN")
+                        clean = name.split("/")[0].strip()
+                        vol = float(attr.get("volume_usd", {}).get("h24") or 0)
+                        liq = float(attr.get("reserve_in_usd") or 0)
+                        if liq >= 25000 and vol >= 40000:
+                            key = f"dex:{chain_ds}:{addr}"
+                            sub[key] = {
+                                "key": key, "chain": chain_ds, "dex": "dex",
+                                "pairAddress": addr, "name": name, "clean": clean,
+                                "volume24h": vol, "liquidity": liq, "dex_url": f"https://dexscreener.com/{chain_ds}/{addr}"
+                            }
+            except Exception:
+                pass
+            return sub
+
+        with ThreadPoolExecutor(max_workers=6) as ex:
+            futures = [
+                ex.submit(_fetch_top_boosts),
+                ex.submit(_fetch_search, "SOL"),
+                ex.submit(_fetch_search, "USDC"),
+                ex.submit(_fetch_search, "ETH"),
+                ex.submit(_fetch_gecko_trending, "solana"),
+                ex.submit(_fetch_gecko_trending, "base")
+            ]
+            for f in futures:
+                try:
+                    discovered.update(f.result())
+                except Exception:
+                    pass
 
         sorted_keys = sorted(discovered.keys(), key=lambda k: discovered[k]["volume24h"], reverse=True)
         self.pair_meta = discovered
@@ -603,13 +600,13 @@ class DexScreenerAPIManager:
         now = time.time()
         if dex_symbol in self.bars_cache:
             ts, m_bars, d_bars = self.bars_cache[dex_symbol]
-            if now - ts < 60:
+            if now - ts < 180:
                 return m_bars, d_bars
 
         raw_candles = []
         try:
             url = f"https://api.geckoterminal.com/api/v2/networks/{gt_network}/pools/{pair_addr}/ohlcv/day?limit=15"
-            r = self.session.get(url, timeout=4)
+            r = self.session.get(url, timeout=2.5)
             if r.status_code == 200:
                 raw_candles = r.json().get("data", {}).get("attributes", {}).get("ohlcv_list", [])
         except Exception:
@@ -698,15 +695,16 @@ def calculate_cpr_and_pivots(h, l, c, decimals=2):
 
 def process_cpr_setup(symbol, timeframe="monthly", mode="active"):
     """Inside Value CPR calculation following Frank Ochoa's Master Framework"""
+    need_monthly = timeframe in ["monthly", "quarterly"]
     is_dex = symbol.startswith("dex:")
     if is_dex:
         monthly_bars, daily_candles = DEXSCREENER_MGR.fetch_market_bars(symbol)
     elif symbol.endswith("-USD"):
         monthly_bars, daily_candles = COINBASE_MGR.fetch_market_bars(symbol)
         if not daily_candles:
-            monthly_bars, daily_candles = BINANCE_MGR.fetch_market_bars(symbol)
+            monthly_bars, daily_candles = BINANCE_MGR.fetch_market_bars(symbol, need_monthly=need_monthly)
     else:
-        monthly_bars, daily_candles = BINANCE_MGR.fetch_market_bars(symbol)
+        monthly_bars, daily_candles = BINANCE_MGR.fetch_market_bars(symbol, need_monthly=need_monthly)
         if not daily_candles:
             monthly_bars, daily_candles = COINBASE_MGR.fetch_market_bars(symbol)
 
@@ -1593,41 +1591,91 @@ DASHBOARD_HTML = """
             runScan();
         }
 
+        let currentAbortController = null;
+        let scanTimerInterval = null;
+
         async function runScan() {
+            if (currentAbortController) {
+                currentAbortController.abort();
+            }
+            currentAbortController = new AbortController();
+
+            if (scanTimerInterval) {
+                clearInterval(scanTimerInterval);
+                scanTimerInterval = null;
+            }
+
             const tbody = document.getElementById('table-body');
             const icon = document.getElementById('refresh-icon');
-            icon.classList.add('animate-spin');
+            if (icon) icon.classList.add('animate-spin');
 
             const isDex = currentMarket === 'crypto_dexscreener';
             const isCoinbase = currentMarket === 'crypto_coinbase';
             const scanTarget = isDex ? 'DEX Screener (Solana • Base • ETH)' : (isCoinbase ? 'Coinbase' : 'Binance');
 
+            let elapsed = 0;
             tbody.innerHTML = `
                 <tr>
                     <td colspan="8" class="text-center py-16 text-slate-400 font-sans">
                         <div class="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-amber-400 mb-3"></div>
-                        <p>Scanning ${scanTarget} for Inside Value & Narrow CPR Compression Setups...</p>
+                        <p class="font-semibold text-slate-200">Scanning ${scanTarget} <span id="scan-seconds-badge" class="text-amber-400 font-mono">(0s)</span></p>
+                        <p class="text-xs text-slate-400 mt-1">Filtering Inside Value & Narrow CPR Volatility Compression Setups...</p>
                     </td>
                 </tr>
             `;
 
+            scanTimerInterval = setInterval(() => {
+                elapsed++;
+                const badge = document.getElementById('scan-seconds-badge');
+                if (badge) badge.innerText = `(${elapsed}s)`;
+            }, 1000);
+
+            // 15 second client timeout guard
+            const timeoutId = setTimeout(() => {
+                if (currentAbortController) currentAbortController.abort();
+            }, 15000);
+
             try {
-                const response = await fetch(`/api/scan?market=${currentMarket}&timeframe=${currentTimeframe}&mode=${currentMode}&min_mc=${currentMinMC}`);
+                const response = await fetch(`/api/scan?market=${currentMarket}&timeframe=${currentTimeframe}&mode=${currentMode}&min_mc=${currentMinMC}`, {
+                    signal: currentAbortController.signal
+                });
+                clearTimeout(timeoutId);
+                if (scanTimerInterval) {
+                    clearInterval(scanTimerInterval);
+                    scanTimerInterval = null;
+                }
+
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+
                 const data = await response.json();
                 scanData = data.results || [];
                 document.getElementById('coils-total').innerText = scanData.length;
                 updateFilterCounts();
                 renderTable();
             } catch (err) {
+                if (scanTimerInterval) {
+                    clearInterval(scanTimerInterval);
+                    scanTimerInterval = null;
+                }
+                if (err.name === 'AbortError') {
+                    return;
+                }
                 tbody.innerHTML = `
                     <tr>
                         <td colspan="8" class="text-center py-12 text-rose-400 font-sans">
-                            Failed to fetch market data. Please retry.
+                            <div class="text-2xl mb-2">⚠️</div>
+                            <p class="font-bold text-slate-200">Scan request timed out or encountered network latency.</p>
+                            <p class="text-xs text-slate-400 mt-1">Click below to retry immediately:</p>
+                            <button onclick="runScan()" class="mt-4 px-4 py-2 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-black font-bold text-xs rounded-xl shadow transition active:scale-95">
+                                🔄 Retry Scan
+                            </button>
                         </td>
                     </tr>
                 `;
             } finally {
-                icon.classList.remove('animate-spin');
+                if (icon) icon.classList.remove('animate-spin');
             }
         }
 
@@ -2026,6 +2074,9 @@ def api_debug():
 
     return jsonify(info)
 
+SCAN_CACHE = {}
+SCAN_CACHE_TTL = 45 # seconds
+
 @app.route("/api/scan")
 def api_scan():
     import traceback
@@ -2035,22 +2086,28 @@ def api_scan():
         mode = request.args.get("mode", "developing")
         min_mc = float(request.args.get("min_mc", 0))
 
+        cache_key = f"{market}:{timeframe}:{mode}:{min_mc}"
+        now = time.time()
+        if cache_key in SCAN_CACHE:
+            ts, cached_payload = SCAN_CACHE[cache_key]
+            if now - ts < SCAN_CACHE_TTL:
+                return jsonify(cached_payload)
+
         is_serverless = os.environ.get("VERCEL") == "1" or os.environ.get("AWS_LAMBDA_FUNCTION_NAME") is not None
         if market == "crypto_dexscreener":
-            max_limit = 120 if is_serverless else 160
+            max_limit = 30 if is_serverless else 60
             symbols = DEXSCREENER_MGR.get_dex_symbols(min_quote_vol=min_mc, max_coins=max_limit)
-            workers = 25
+            workers = 12
         elif market == "crypto_coinbase":
-            max_limit = 350 if is_serverless else 450
+            max_limit = 120 if is_serverless else 250
             symbols = COINBASE_MGR.get_coinbase_symbols(min_quote_vol=min_mc, max_coins=max_limit)
-            workers = 35
+            workers = 25
         else:
-            max_limit = 650 if is_serverless else 800
+            max_limit = 180 if is_serverless else 400
             symbols = BINANCE_MGR.get_binance_symbols(min_quote_vol=min_mc, max_coins=max_limit)
-            workers = 35
+            workers = 28
         
         results = []
-        workers = 35
         with ThreadPoolExecutor(max_workers=workers) as executor:
             futures = [executor.submit(process_cpr_setup, sym, timeframe, mode) for sym in symbols]
             for f in futures:
@@ -2065,14 +2122,16 @@ def api_scan():
                 x.get('compression_pct', 0)
             ), reverse=True)
         
-        return jsonify({
+        payload = {
             "strategy": "inside_value",
             "market": market,
             "timeframe": timeframe,
             "mode": mode,
             "count": len(results),
             "results": results
-        })
+        }
+        SCAN_CACHE[cache_key] = (now, payload)
+        return jsonify(payload)
     except Exception as e:
         return jsonify({
             "error": str(e),
