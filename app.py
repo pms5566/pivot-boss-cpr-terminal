@@ -582,11 +582,21 @@ class DexScreenerAPIManager:
                     pass
 
         sorted_keys = sorted(discovered.keys(), key=lambda k: discovered[k]["volume24h"], reverse=True)
+        # Prioritize established multi-month liquid pairs so we stay within rate limits and guarantee full daily candles
+        established_priority = [
+            "dex:base:0xc01c2800186207270BA5386532a8173C5b7dD194",
+            "dex:bsc:0x0f338Ec12d3f7C3D77A4B9fcC1f95F3FB6AD0EA6",
+            "dex:bsc:0xD0e226f674bBf064f54aB47F42473fF80DB98CBA",
+            "dex:base:0x868Eed6BAD4bD368cd053b766F84CC727697589A",
+            "dex:base:0x16c70f04c3080a127486cdf5a4c33c066bbf47c3"
+        ]
+        ordered_keys = [k for k in established_priority if k in discovered] + [k for k in sorted_keys if k not in established_priority]
+
         self.pair_meta = discovered
-        self.pairs_cache = sorted_keys
+        self.pairs_cache = ordered_keys
         self.pairs_time = now
 
-        filtered = [s for s in sorted_keys if discovered[s]["volume24h"] >= min_quote_vol]
+        filtered = [s for s in ordered_keys if discovered[s]["volume24h"] >= min_quote_vol]
         return filtered[:max_coins]
 
     def fetch_market_bars(self, dex_symbol):
@@ -600,7 +610,7 @@ class DexScreenerAPIManager:
         now = time.time()
         if dex_symbol in self.bars_cache:
             ts, m_bars, d_bars = self.bars_cache[dex_symbol]
-            if now - ts < 180:
+            if now - ts < 600:
                 return m_bars, d_bars
 
         raw_candles = []
@@ -613,6 +623,9 @@ class DexScreenerAPIManager:
             pass
 
         if not raw_candles or len(raw_candles) < 3:
+            # Fall back to stale cache if rate-limited
+            if dex_symbol in self.bars_cache:
+                return self.bars_cache[dex_symbol][1], self.bars_cache[dex_symbol][2]
             return [], []
 
         raw_candles.sort(key=lambda x: x[0])
@@ -1737,7 +1750,12 @@ DASHBOARD_HTML = """
             const tbody = document.getElementById('table-body');
             
             if (filtered.length === 0) {
-                const emptyMsg = `No matching compression setups found for this filter.<br>
+                const emptyMsg = isDex
+                    ? `No on-chain DEX tokens currently meet strict <strong>Inside Value</strong> or <strong>Narrow CPR</strong> compression criteria.<br>
+                       <span class="text-xs text-amber-300 mt-2 block font-normal">
+                         On-chain DEX memecoins typically experience massive directional trend expansion. Switch to <strong>🪙 Binance</strong> or <strong>🔵 Coinbase</strong> for institutional Inside Value and Narrow CPR coils.
+                       </span>`
+                    : `No matching compression setups found for this filter.<br>
                        <span class="text-xs text-amber-300 mt-2 block font-normal">
                          Try clicking <strong>🌐 All Setups</strong> or switching between <strong>🔮 Developing</strong> and <strong>📍 Active</strong>.
                        </span>`;
