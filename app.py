@@ -1988,7 +1988,7 @@ DASHBOARD_HTML = """
             if (!scanData || scanData.length === 0) return;
             let text = '';
             if (currentMarket === 'crypto_dexscreener') {
-                text = scanData.map(i => i.dex_url || `https://dexscreener.com/${i.chain}/${i.symbol.split(':')[2]}`).join('\n');
+                text = scanData.map(i => i.dex_url || `https://dexscreener.com/${i.chain}/${i.symbol.split(':')[2]}`).join(String.fromCharCode(10));
             } else {
                 text = scanData.map(i => {
                     if (currentMarket === 'crypto_coinbase') return `COINBASE:${i.clean_symbol}USD`;
