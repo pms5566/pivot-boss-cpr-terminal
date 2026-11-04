@@ -2188,7 +2188,7 @@ def api_scan():
 
         is_serverless = os.environ.get("VERCEL") == "1" or os.environ.get("AWS_LAMBDA_FUNCTION_NAME") is not None
         if market == "crypto_coinbase":
-            max_limit = 150 if is_serverless else 450
+            max_limit = 120 if is_serverless else 220
             symbols = COINBASE_MGR.get_coinbase_symbols(min_quote_vol=min_mc, max_coins=max_limit)
             workers = 25
         elif market == "crypto_bybit":
