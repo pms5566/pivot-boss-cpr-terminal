@@ -2135,6 +2135,15 @@ def api_debug():
     import traceback
     info = {}
     try:
+        r_bybit = requests.get("https://api.bytick.com/v5/market/tickers?category=spot", timeout=5)
+        info["bybit_spot"] = {
+            "status": r_bybit.status_code,
+            "resp": r_bybit.json() if r_bybit.status_code == 200 else r_bybit.text[:200]
+        }
+    except Exception as e:
+        info["bybit_spot"] = {"error": str(e)}
+
+    try:
         r2 = requests.get("https://data-api.binance.vision/api/v3/ticker/24hr", timeout=5)
         tickers = r2.json()
         info["binance_vision_tickers"] = {
