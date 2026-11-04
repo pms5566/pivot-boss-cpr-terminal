@@ -606,6 +606,7 @@ def process_cpr_setup(symbol, timeframe="monthly", mode="active"):
         # Guard: In crypto, ensure the last candle is active (today or yesterday)
         now_utc = datetime.datetime.now(datetime.timezone.utc)
         today_utc = now_utc.strftime("%Y-%m-%d")
+        tomorrow_utc = (now_utc + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
         yesterday_utc = (now_utc - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
         last_candle_date = today_c.get("date", "")
         if last_candle_date not in [today_utc, yesterday_utc]:
@@ -619,8 +620,8 @@ def process_cpr_setup(symbol, timeframe="monthly", mode="active"):
         if mode == "developing":
             cpr_target = calculate_cpr_and_pivots(today_c['high'], today_c['low'], today_c['close'], dec)
             cpr_base = calculate_cpr_and_pivots(yesterday_c['high'], yesterday_c['low'], yesterday_c['close'], dec)
-            target_label = f"Tomorrow (Developing)"
-            base_label = f"Today's CPR ({today_c.get('date', '')})"
+            target_label = f"Developing Tomorrow ({tomorrow_utc})"
+            base_label = f"Active CPR Today ({today_c.get('date', today_utc)})"
             trigger_h = round(today_c['high'], dec)
             trigger_l = round(today_c['low'], dec)
             trigger_name_h = "Today High (Buy)"
@@ -628,8 +629,8 @@ def process_cpr_setup(symbol, timeframe="monthly", mode="active"):
         else:
             cpr_target = calculate_cpr_and_pivots(yesterday_c['high'], yesterday_c['low'], yesterday_c['close'], dec)
             cpr_base = calculate_cpr_and_pivots(day_before_c['high'], day_before_c['low'], day_before_c['close'], dec)
-            target_label = f"Today's CPR ({today_c.get('date', '')})"
-            base_label = f"Prior Day CPR ({yesterday_c.get('date', '')})"
+            target_label = f"Active CPR Today ({today_c.get('date', today_utc)})"
+            base_label = f"Prior Day CPR ({yesterday_c.get('date', yesterday_utc)})"
             trigger_h = round(yesterday_c['high'], dec)
             trigger_l = round(yesterday_c['low'], dec)
             trigger_name_h = "PD High (Buy)"
@@ -643,26 +644,37 @@ def process_cpr_setup(symbol, timeframe="monthly", mode="active"):
     p_b = cpr_base['p']
 
     is_strict = (top_t <= top_b) and (bot_t >= bot_b)
-    tol = p_b * 0.003
-    is_near_coil = (not is_strict) and (top_t <= (top_b + tol)) and (bot_t >= (bot_b - tol))
-    is_inside = is_strict or is_near_coil
 
     width_target = cpr_target['cpr_width_pct']
     width_base = cpr_base['cpr_width_pct']
     compression_pct = round(((1.0 - (width_target / width_base)) * 100.0), 1) if width_base > 0 else 0.0
 
+    # Strict directional validation: prevent Higher/Lower/Outside Value false-positives
+    is_higher_val = (top_t > top_b) and (bot_t > bot_b)
+    is_lower_val = (top_t < top_b) and (bot_t < bot_b)
+    is_outside_val = (top_t > top_b) and (bot_t < bot_b)
+    tol = p_b * 0.0015
+
+    # Near-Coil Inside strictly requires positive compression (>= 15%) and no directional shift
+    is_near_coil = (not is_strict) and (not is_higher_val) and (not is_lower_val) and (not is_outside_val) and (compression_pct >= 15.0) and (top_t <= (top_b + tol)) and (bot_t >= (bot_b - tol))
+    is_inside = is_strict or is_near_coil
+
     # Narrow CPR Thresholds (Frank Ochoa Framework)
     if timeframe == "daily":
         narrow_width_threshold = 0.40
-        max_narrow_cap = 1.20
+        max_narrow_cap = 1.00
     elif timeframe == "monthly":
-        narrow_width_threshold = 3.50
-        max_narrow_cap = 5.00
+        narrow_width_threshold = 3.00
+        max_narrow_cap = 4.50
     else: # quarterly
-        narrow_width_threshold = 4.50
-        max_narrow_cap = 6.50
+        narrow_width_threshold = 4.00
+        max_narrow_cap = 5.50
 
-    is_narrow = (width_target <= narrow_width_threshold) or (compression_pct >= 60.0 and width_target <= max_narrow_cap)
+    # In early month, developing monthly bars are incomplete, so require significant compression
+    if timeframe == "monthly" and mode == "developing" and datetime.datetime.now(datetime.timezone.utc).day < 15:
+        is_narrow = (compression_pct >= 60.0 and width_target <= max_narrow_cap)
+    else:
+        is_narrow = (width_target <= narrow_width_threshold and compression_pct >= -15.0) or (compression_pct >= 50.0 and width_target <= max_narrow_cap)
 
     # Holy Grail Combo: Inside Value AND Narrow CPR
     is_combo = is_inside and is_narrow
@@ -879,11 +891,11 @@ DASHBOARD_HTML = """
 
                 <!-- Mode Selector -->
                 <div class="flex bg-navy-950 p-1 rounded-xl border border-navy-700 text-xs font-medium shadow-inner">
-                    <button onclick="setMode('developing')" id="btn-mode-dev" class="px-3 py-1.5 rounded-lg transition-all text-white bg-purple-600 font-bold shadow">
-                        🔮 Developing
-                    </button>
-                    <button onclick="setMode('active')" id="btn-mode-act" class="px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white">
+                    <button onclick="setMode('active')" id="btn-mode-act" class="px-3 py-1.5 rounded-lg transition-all text-white bg-emerald-600 font-bold shadow">
                         📍 Active
+                    </button>
+                    <button onclick="setMode('developing')" id="btn-mode-dev" class="px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white">
+                        🔮 Developing
                     </button>
                 </div>
 
@@ -932,9 +944,9 @@ DASHBOARD_HTML = """
             <div class="flex items-start gap-3">
                 <div class="text-2xl mt-0.5" id="banner-icon">🎯</div>
                 <div>
-                    <h3 class="text-sm font-bold text-amber-300" id="banner-title">Daily Developing Inside Value CPR Setup:</h3>
+                    <h3 class="text-sm font-bold text-amber-300" id="banner-title">Daily Active Inside Value CPR Setup:</h3>
                     <p class="text-xs text-slate-300 mt-0.5" id="banner-desc">
-                        These crypto assets are in <strong>verified volatility compression</strong> (Pivot Range completely inside prior Pivot Range). Breakouts above Upper Boundary/Today High or breakdowns below Lower Boundary/Today Low trigger violent expansions.
+                        These crypto assets are in <strong>verified volatility compression</strong> (Pivot Range completely inside prior Pivot Range). Breakouts above Upper Boundary/PD High or breakdowns below Lower Boundary/PD Low trigger violent expansions.
                     </p>
                 </div>
             </div>
@@ -973,8 +985,8 @@ DASHBOARD_HTML = """
                             <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('market_cap')">Coin Pair & 24h Vol ↕</th>
                             <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('ltp')">Current LTP & Chg ↕</th>
                             <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('priority')">Setup & Compression ↕</th>
-                            <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('cpr_width_pct')">Target CPR Band (BC • P • TC) ↕</th>
-                            <th class="py-3.5 px-4">Base CPR Band (BC • P • TC)</th>
+                            <th class="py-3.5 px-4 cursor-pointer hover:text-white" onclick="sortTable('cpr_width_pct')">Target CPR (Lower • Pivot • Upper) ↕</th>
+                            <th class="py-3.5 px-4">Base CPR (Lower • Pivot • Upper)</th>
                             <th class="py-3.5 px-4">Breakout Triggers</th>
                             <th class="py-3.5 px-4">Position Status</th>
                             <th class="py-3.5 px-4 text-center">Chart / Action</th>
@@ -1007,9 +1019,9 @@ DASHBOARD_HTML = """
                 </button>
             </div>
             <div class="p-4 grid grid-cols-2 sm:grid-cols-4 gap-3 bg-navy-950/60 border-b border-navy-700 text-xs">
-                <div><span class="text-slate-400">Target TC:</span> <span id="modal-tc" class="font-mono text-blue-400 font-semibold"></span></div>
+                <div><span class="text-slate-400">Target Upper:</span> <span id="modal-tc" class="font-mono text-blue-400 font-semibold"></span></div>
                 <div><span class="text-slate-400">Target Pivot (P):</span> <span id="modal-p" class="font-mono text-purple-400 font-semibold"></span></div>
-                <div><span class="text-slate-400">Target BC:</span> <span id="modal-bc" class="font-mono text-blue-400 font-semibold"></span></div>
+                <div><span class="text-slate-400">Target Lower:</span> <span id="modal-bc" class="font-mono text-blue-400 font-semibold"></span></div>
                 <div><span class="text-slate-400">Triggers:</span> <span id="modal-info" class="font-mono text-amber-400 font-semibold"></span></div>
             </div>
             <div id="chart-container" class="w-full h-96 p-2 bg-navy-950"></div>
@@ -1151,7 +1163,7 @@ DASHBOARD_HTML = """
 
     <script>
         let currentTimeframe = 'daily';
-        let currentMode = 'developing';
+        let currentMode = 'active';
         let currentMarket = 'crypto_all';
         let currentMinMC = 0; // 0 for all liquid pairs
         let currentSort = { column: 'priority', ascending: false };
@@ -1633,7 +1645,7 @@ DASHBOARD_HTML = """
                     lineWidth: 1,
                     lineStyle: LightweightCharts.LineStyle.Dashed,
                     axisLabelVisible: true,
-                    title: 'Base TC'
+                    title: 'Base Upper'
                 });
                 candleSeries.createPriceLine({
                     price: item.prev_cpr.cpr_bot,
@@ -1641,7 +1653,7 @@ DASHBOARD_HTML = """
                     lineWidth: 1,
                     lineStyle: LightweightCharts.LineStyle.Dashed,
                     axisLabelVisible: true,
-                    title: 'Base BC'
+                    title: 'Base Lower'
                 });
             }
             candleSeries.createPriceLine({
@@ -1650,7 +1662,7 @@ DASHBOARD_HTML = """
                 lineWidth: 2,
                 lineStyle: LightweightCharts.LineStyle.Solid,
                 axisLabelVisible: true,
-                title: 'Target TC'
+                title: 'Target Upper'
             });
             candleSeries.createPriceLine({
                 price: item.curr_cpr.p,
@@ -1666,7 +1678,7 @@ DASHBOARD_HTML = """
                 lineWidth: 2,
                 lineStyle: LightweightCharts.LineStyle.Solid,
                 axisLabelVisible: true,
-                title: 'Target BC'
+                title: 'Target Lower'
             });
 
             // Trigger Price Lines (Dotted)
@@ -1796,7 +1808,7 @@ def api_scan():
     try:
         market = request.args.get("market", "crypto_all")
         timeframe = request.args.get("timeframe", "daily")
-        mode = request.args.get("mode", "developing")
+        mode = request.args.get("mode", "active")
         min_mc = float(request.args.get("min_mc", 0))
 
         cache_key = f"{market}:{timeframe}:{mode}:{min_mc}"
