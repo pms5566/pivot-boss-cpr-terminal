@@ -445,6 +445,318 @@ class CoinbaseAPIManager:
 
 COINBASE_MGR = CoinbaseAPIManager()
 
+class BybitAPIManager:
+    def __init__(self):
+        self.session = requests.Session()
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36'
+        })
+        adapter = requests.adapters.HTTPAdapter(pool_connections=60, pool_maxsize=60, max_retries=1)
+        self.session.mount('https://', adapter)
+        self.session.mount('http://', adapter)
+        self.ticker_cache = []
+        self.ticker_time = 0
+        self.vol_cache = {}
+        self.bars_cache = {}
+        self.base_urls = ["https://api.bytick.com", "https://api.bybit.com"]
+
+    def get_bybit_symbols(self, min_quote_vol=0, max_coins=800):
+        now = time.time()
+        if self.ticker_cache and (now - self.ticker_time < 60):
+            filtered = [s for s, v in self.ticker_cache if v >= min_quote_vol]
+            return filtered[:max_coins]
+
+        raw = []
+        for base in self.base_urls:
+            try:
+                r = self.session.get(f"{base}/v5/market/tickers?category=spot", timeout=5)
+                if r.status_code == 200:
+                    data = r.json()
+                    res_list = data.get("result", {}).get("list", [])
+                    if isinstance(res_list, list) and res_list:
+                        raw = res_list
+                        break
+            except Exception:
+                continue
+
+        stables = {
+            "USDCUSDT", "FDUSDUSDT", "EURUSDT", "USDEUSDT", "USD1USDT", "TUSDUSDT",
+            "USDDUSDT", "DAIUSDT", "PYUSDUSDT", "WBTCUSDT", "WETHUSDT", "USDTUSDC", "USDCUSDC"
+        }
+        pairs = []
+        for t in raw:
+            if not isinstance(t, dict): continue
+            sym = t.get("symbol", "")
+            if sym.endswith("USDT") and sym not in stables:
+                vol = float(t.get("turnover24h") or 0)
+                self.vol_cache[sym] = vol
+                pairs.append((sym, vol))
+
+        pairs.sort(key=lambda x: x[1], reverse=True)
+        self.ticker_cache = pairs
+        self.ticker_time = now
+
+        priority = [
+            "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT", "ADAUSDT",
+            "AVAXUSDT", "SUIUSDT", "NEARUSDT", "LINKUSDT", "BNBUSDT", "PEPEUSDT",
+            "HYPEUSDT", "LTCUSDT", "BCHUSDT", "AAVEUSDT", "DOTUSDT"
+        ]
+        sym_list = [s[0] for s in pairs if s[1] >= min_quote_vol]
+        sorted_syms = [p for p in priority if p in sym_list] + [s for s in sym_list if s not in priority]
+        return sorted_syms[:max_coins]
+
+    def fetch_market_bars(self, symbol, need_monthly=False):
+        sym = symbol.replace("-USD", "USDT")
+        if not sym.endswith("USDT") and not sym.endswith("USDC"):
+            sym = sym + "USDT"
+
+        now = time.time()
+        if sym in self.bars_cache:
+            ts, m_bars, d_bars = self.bars_cache[sym]
+            if now - ts < 60:
+                if not need_monthly or (need_monthly and m_bars):
+                    return m_bars, d_bars
+
+        d_raw = []
+        for base in self.base_urls:
+            try:
+                r = self.session.get(f"{base}/v5/market/kline?category=spot&symbol={sym}&interval=D&limit=120", timeout=4)
+                if r.status_code == 200:
+                    data = r.json()
+                    k_list = data.get("result", {}).get("list", [])
+                    if isinstance(k_list, list) and len(k_list) >= 5:
+                        d_raw = k_list
+                        break
+            except Exception:
+                continue
+
+        if not d_raw or len(d_raw) < 5:
+            return [], []
+
+        # Bybit returns newest first! Reverse to chronological order (oldest first, newest last)
+        d_raw = list(reversed(d_raw))
+
+        daily_candles = []
+        for b in d_raw:
+            dt = datetime.datetime.fromtimestamp(int(b[0]) / 1000.0, tz=datetime.timezone.utc).strftime("%Y-%m-%d")
+            daily_candles.append({
+                "date": dt,
+                "time": int(int(b[0]) / 1000),
+                "open": float(b[1]),
+                "high": float(b[2]),
+                "low": float(b[3]),
+                "close": float(b[4]),
+                "volume": float(b[5])
+            })
+
+        monthly_bars = []
+        if need_monthly:
+            m_raw = []
+            for base in self.base_urls:
+                try:
+                    r = self.session.get(f"{base}/v5/market/kline?category=spot&symbol={sym}&interval=M&limit=24", timeout=4)
+                    if r.status_code == 200:
+                        data = r.json()
+                        k_list = data.get("result", {}).get("list", [])
+                        if isinstance(k_list, list) and k_list:
+                            m_raw = k_list
+                            break
+                except Exception:
+                    continue
+            if m_raw:
+                m_raw = list(reversed(m_raw))
+                for b in m_raw:
+                    dt = datetime.datetime.fromtimestamp(int(b[0]) / 1000.0, tz=datetime.timezone.utc).strftime("%Y-%m-%d")
+                    monthly_bars.append({
+                        "date": dt,
+                        "month": dt[:7],
+                        "time": int(int(b[0]) / 1000),
+                        "open": float(b[1]),
+                        "high": float(b[2]),
+                        "low": float(b[3]),
+                        "close": float(b[4]),
+                        "volume": float(b[5])
+                    })
+
+        self.bars_cache[sym] = (now, monthly_bars, daily_candles)
+        return monthly_bars, daily_candles
+
+    def get_spot_volume(self, symbol):
+        sym = symbol.replace("-USD", "USDT")
+        if not sym.endswith("USDT") and not sym.endswith("USDC"):
+            sym = sym + "USDT"
+        now = time.time()
+        if not self.vol_cache or (now - self.ticker_time >= 60):
+            self.get_bybit_symbols()
+        return self.vol_cache.get(sym, 0.0)
+
+    def format_usd(self, val):
+        if val is None or val <= 0:
+            return None
+        if val >= 1_000_000_000:
+            return f"${val / 1_000_000_000:.2f}B"
+        if val >= 1_000_000:
+            return f"${val / 1_000_000:.1f}M"
+        if val >= 1_000:
+            return f"${val / 1_000:.0f}K"
+        return f"${val:.1f}"
+
+BYBIT_MGR = BybitAPIManager()
+
+class MexcAPIManager:
+    def __init__(self):
+        self.session = requests.Session()
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36'
+        })
+        adapter = requests.adapters.HTTPAdapter(pool_connections=60, pool_maxsize=60, max_retries=1)
+        self.session.mount('https://', adapter)
+        self.session.mount('http://', adapter)
+        self.ticker_cache = []
+        self.ticker_time = 0
+        self.vol_cache = {}
+        self.bars_cache = {}
+        self.base_urls = ["https://api.mexc.co", "https://api.mexc.com"]
+
+    def get_mexc_symbols(self, min_quote_vol=0, max_coins=800):
+        now = time.time()
+        if self.ticker_cache and (now - self.ticker_time < 60):
+            filtered = [s for s, v in self.ticker_cache if v >= min_quote_vol]
+            return filtered[:max_coins]
+
+        raw = []
+        for base in self.base_urls:
+            try:
+                r = self.session.get(f"{base}/api/v3/ticker/24hr", timeout=6)
+                if r.status_code == 200:
+                    data = r.json()
+                    if isinstance(data, list) and data:
+                        raw = data
+                        break
+            except Exception:
+                continue
+
+        stables = {
+            "USDCUSDT", "FDUSDUSDT", "EURUSDT", "USDEUSDT", "USD1USDT", "TUSDUSDT",
+            "USDDUSDT", "DAIUSDT", "PYUSDUSDT", "WBTCUSDT", "WETHUSDT", "USDTUSDC", "USDCUSDC"
+        }
+        pairs = []
+        for t in raw:
+            if not isinstance(t, dict): continue
+            sym = t.get("symbol", "")
+            if sym.endswith("USDT") and sym not in stables:
+                vol = float(t.get("quoteVolume") or 0)
+                self.vol_cache[sym] = vol
+                # Enforce at least $50,000 24h volume to filter out illiquid micro-caps
+                effective_min = max(min_quote_vol, 50000)
+                if vol >= effective_min:
+                    pairs.append((sym, vol))
+
+        pairs.sort(key=lambda x: x[1], reverse=True)
+        self.ticker_cache = pairs
+        self.ticker_time = now
+
+        priority = [
+            "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT", "ADAUSDT",
+            "AVAXUSDT", "SUIUSDT", "NEARUSDT", "LINKUSDT", "PEPEUSDT", "HYPEUSDT",
+            "LTCUSDT", "BCHUSDT", "AAVEUSDT", "DOTUSDT"
+        ]
+        sym_list = [s[0] for s in pairs]
+        sorted_syms = [p for p in priority if p in sym_list] + [s for s in sym_list if s not in priority]
+        return sorted_syms[:max_coins]
+
+    def fetch_market_bars(self, symbol, need_monthly=False):
+        sym = symbol.replace("-USD", "USDT")
+        if not sym.endswith("USDT") and not sym.endswith("USDC"):
+            sym = sym + "USDT"
+
+        now = time.time()
+        if sym in self.bars_cache:
+            ts, m_bars, d_bars = self.bars_cache[sym]
+            if now - ts < 60:
+                if not need_monthly or (need_monthly and m_bars):
+                    return m_bars, d_bars
+
+        d_raw = []
+        for base in self.base_urls:
+            try:
+                r = self.session.get(f"{base}/api/v3/klines?symbol={sym}&interval=1d&limit=120", timeout=4)
+                if r.status_code == 200:
+                    data = r.json()
+                    if isinstance(data, list) and len(data) >= 5:
+                        d_raw = data
+                        break
+            except Exception:
+                continue
+
+        if not d_raw or len(d_raw) < 5:
+            return [], []
+
+        daily_candles = []
+        for b in d_raw:
+            dt = datetime.datetime.fromtimestamp(int(b[0]) / 1000.0, tz=datetime.timezone.utc).strftime("%Y-%m-%d")
+            daily_candles.append({
+                "date": dt,
+                "time": int(int(b[0]) / 1000),
+                "open": float(b[1]),
+                "high": float(b[2]),
+                "low": float(b[3]),
+                "close": float(b[4]),
+                "volume": float(b[5])
+            })
+
+        monthly_bars = []
+        if need_monthly:
+            m_raw = []
+            for base in self.base_urls:
+                try:
+                    r = self.session.get(f"{base}/api/v3/klines?symbol={sym}&interval=1M&limit=24", timeout=4)
+                    if r.status_code == 200:
+                        data = r.json()
+                        if isinstance(data, list) and data:
+                            m_raw = data
+                            break
+                except Exception:
+                    continue
+            if m_raw:
+                for b in m_raw:
+                    dt = datetime.datetime.fromtimestamp(int(b[0]) / 1000.0, tz=datetime.timezone.utc).strftime("%Y-%m-%d")
+                    monthly_bars.append({
+                        "date": dt,
+                        "month": dt[:7],
+                        "time": int(int(b[0]) / 1000),
+                        "open": float(b[1]),
+                        "high": float(b[2]),
+                        "low": float(b[3]),
+                        "close": float(b[4]),
+                        "volume": float(b[5])
+                    })
+
+        self.bars_cache[sym] = (now, monthly_bars, daily_candles)
+        return monthly_bars, daily_candles
+
+    def get_spot_volume(self, symbol):
+        sym = symbol.replace("-USD", "USDT")
+        if not sym.endswith("USDT") and not sym.endswith("USDC"):
+            sym = sym + "USDT"
+        now = time.time()
+        if not self.vol_cache or (now - self.ticker_time >= 60):
+            self.get_mexc_symbols()
+        return self.vol_cache.get(sym, 0.0)
+
+    def format_usd(self, val):
+        if val is None or val <= 0:
+            return None
+        if val >= 1_000_000_000:
+            return f"${val / 1_000_000_000:.2f}B"
+        if val >= 1_000_000:
+            return f"${val / 1_000_000:.1f}M"
+        if val >= 1_000:
+            return f"${val / 1_000:.0f}K"
+        return f"${val:.1f}"
+
+MEXC_MGR = MexcAPIManager()
+
 
 
 def calculate_cpr_and_pivots(h, l, c, decimals=2):
@@ -484,10 +796,18 @@ def calculate_cpr_and_pivots(h, l, c, decimals=2):
         "h4": round(h4, decimals), "l4": round(l4, decimals)
     }
 
-def process_cpr_setup(symbol, timeframe="monthly", mode="active"):
+def process_cpr_setup(symbol, timeframe="monthly", mode="active", market="crypto_all"):
     """Inside Value CPR calculation following Frank Ochoa's Master Framework"""
     need_monthly = timeframe in ["monthly", "quarterly"]
-    if symbol.endswith("-USD"):
+    if market == "crypto_bybit":
+        monthly_bars, daily_candles = BYBIT_MGR.fetch_market_bars(symbol, need_monthly=need_monthly)
+        if not daily_candles:
+            monthly_bars, daily_candles = BINANCE_MGR.fetch_market_bars(symbol, need_monthly=need_monthly)
+    elif market == "crypto_mexc":
+        monthly_bars, daily_candles = MEXC_MGR.fetch_market_bars(symbol, need_monthly=need_monthly)
+        if not daily_candles:
+            monthly_bars, daily_candles = BINANCE_MGR.fetch_market_bars(symbol, need_monthly=need_monthly)
+    elif market == "crypto_coinbase" or symbol.endswith("-USD"):
         monthly_bars, daily_candles = COINBASE_MGR.fetch_market_bars(symbol)
         if not daily_candles:
             monthly_bars, daily_candles = BINANCE_MGR.fetch_market_bars(symbol, need_monthly=need_monthly)
@@ -767,22 +1087,39 @@ def process_cpr_setup(symbol, timeframe="monthly", mode="active"):
 
     clean_symbol = symbol.replace("USDT", "").replace("USDC", "").replace("-USD", "")
     display_name = symbol
-    if symbol.endswith("-USD"):
+    if market == "crypto_bybit":
+        vol_usd = BYBIT_MGR.get_spot_volume(symbol)
+        mc_formatted = (BYBIT_MGR.format_usd(vol_usd) + " 24h Vol") if vol_usd > 0 else None
+        exchange_name = "Bybit"
+        tv_exchange = "BYBIT"
+    elif market == "crypto_mexc":
+        vol_usd = MEXC_MGR.get_spot_volume(symbol)
+        mc_formatted = (MEXC_MGR.format_usd(vol_usd) + " 24h Vol") if vol_usd > 0 else None
+        exchange_name = "MEXC"
+        tv_exchange = "MEXC"
+    elif market == "crypto_coinbase" or symbol.endswith("-USD"):
         vol_usd = COINBASE_MGR.get_spot_volume(symbol)
         if not vol_usd:
             vol_usd = BINANCE_MGR.get_spot_volume(symbol)
         mc_formatted = (COINBASE_MGR.format_usd(vol_usd) + " 24h Vol") if vol_usd > 0 else None
+        exchange_name = "Coinbase"
+        tv_exchange = "COINBASE"
     else:
         vol_usd = BINANCE_MGR.get_spot_volume(symbol)
         if not vol_usd:
             vol_usd = COINBASE_MGR.get_spot_volume(symbol)
         mc_formatted = (BINANCE_MGR.format_usd(vol_usd) + " 24h Vol") if vol_usd > 0 else None
+        exchange_name = "Binance"
+        tv_exchange = "BINANCE"
     market_cap = vol_usd
 
     return {
         "symbol": symbol,
         "clean_symbol": clean_symbol,
         "display_name": display_name,
+        "exchange": exchange_name,
+        "tv_exchange": tv_exchange,
+        "market": market,
         "market_cap": market_cap,
         "mc_formatted": mc_formatted,
         "strategy": "inside_value",
@@ -899,10 +1236,16 @@ DASHBOARD_HTML = """
                     </button>
                 </div>
 
-                <!-- Market Selector: Binance vs Coinbase -->
+                <!-- Market Selector: Binance vs Bybit vs MEXC vs Coinbase -->
                 <div class="flex bg-navy-950 p-1 rounded-xl border border-navy-700 text-xs font-medium shadow-inner">
                     <button onclick="setMarket('crypto_all')" id="btn-crypto" class="px-3 py-1.5 rounded-lg transition-all text-white bg-indigo-600 font-semibold shadow">
                         🪙 Binance
+                    </button>
+                    <button onclick="setMarket('crypto_bybit')" id="btn-bybit" class="px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white">
+                        🟡 Bybit
+                    </button>
+                    <button onclick="setMarket('crypto_mexc')" id="btn-mexc" class="px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white">
+                        🟢 MEXC
                     </button>
                     <button onclick="setMarket('crypto_coinbase')" id="btn-coinbase" class="px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white">
                         🔵 Coinbase
@@ -1286,8 +1629,10 @@ DASHBOARD_HTML = """
             bannerTitle.className = 'text-sm font-bold text-amber-300';
             bannerTitle.innerText = `${tfName} ${modeName} Volatility Compression Breakout Engine:`;
 
-            const isCoinbase = currentMarket === 'crypto_coinbase';
-            const exchangeName = isCoinbase ? 'Coinbase' : 'Binance';
+            let exchangeName = 'Binance';
+            if (currentMarket === 'crypto_coinbase') exchangeName = 'Coinbase';
+            else if (currentMarket === 'crypto_bybit') exchangeName = 'Bybit Spot';
+            else if (currentMarket === 'crypto_mexc') exchangeName = 'MEXC Spot';
             
             if (currentQuickFilter === 'combo') {
                 tableTitle.innerText = `🔥 Holy Grail Double Compression: Inside + Narrow CPRs (${exchangeName} • ${tfName} ${modeName})`;
@@ -1313,21 +1658,31 @@ DASHBOARD_HTML = """
 
             // Market selector styles
             const btnCrypto = document.getElementById('btn-crypto');
+            const btnBybit = document.getElementById('btn-bybit');
+            const btnMexc = document.getElementById('btn-mexc');
             const btnCoinbase = document.getElementById('btn-coinbase');
-            if (btnCrypto) {
-                btnCrypto.className = currentMarket === 'crypto_all' 
-                    ? 'px-3 py-1.5 rounded-lg transition-all text-white bg-indigo-600 font-bold shadow'
-                    : 'px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white';
-            }
-            if (btnCoinbase) {
-                btnCoinbase.className = currentMarket === 'crypto_coinbase' 
-                    ? 'px-3 py-1.5 rounded-lg transition-all text-white bg-indigo-600 font-bold shadow'
-                    : 'px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white';
-            }
+            const mButtons = [
+                { id: 'crypto_all', el: btnCrypto },
+                { id: 'crypto_bybit', el: btnBybit },
+                { id: 'crypto_mexc', el: btnMexc },
+                { id: 'crypto_coinbase', el: btnCoinbase }
+            ];
+            mButtons.forEach(mb => {
+                if (mb.el) {
+                    mb.el.className = currentMarket === mb.id 
+                        ? 'px-3 py-1.5 rounded-lg transition-all text-white bg-indigo-600 font-bold shadow'
+                        : 'px-3 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white';
+                }
+            });
 
             // Volume Controls
             const lbl = document.getElementById('btn-mc-all-label');
-            if (lbl) lbl.innerText = isCoinbase ? '🔵 Coinbase All' : '🌐 Binance All';
+            if (lbl) {
+                if (currentMarket === 'crypto_coinbase') lbl.innerText = '🔵 Coinbase All';
+                else if (currentMarket === 'crypto_bybit') lbl.innerText = '🟡 Bybit All';
+                else if (currentMarket === 'crypto_mexc') lbl.innerText = '🟢 MEXC All';
+                else lbl.innerText = '🌐 Binance All';
+            }
             ['all', '5m', '50m', '500m'].forEach(k => {
                 const btn = document.getElementById(`btn-mc-${k}`);
                 if (btn) btn.className = 'px-2.5 py-1.5 rounded-lg transition-all text-slate-400 hover:text-white';
@@ -1373,8 +1728,10 @@ DASHBOARD_HTML = """
             const icon = document.getElementById('refresh-icon');
             if (icon) icon.classList.add('animate-spin');
 
-            const isCoinbase = currentMarket === 'crypto_coinbase';
-            const scanTarget = isCoinbase ? 'Coinbase' : 'Binance';
+            let scanTarget = 'Binance';
+            if (currentMarket === 'crypto_coinbase') scanTarget = 'Coinbase';
+            else if (currentMarket === 'crypto_bybit') scanTarget = 'Bybit Spot';
+            else if (currentMarket === 'crypto_mexc') scanTarget = 'MEXC Spot';
 
             let elapsed = 0;
             tbody.innerHTML = `
@@ -1495,8 +1852,18 @@ DASHBOARD_HTML = """
                 return (b.compression_pct || 0) - (a.compression_pct || 0);
             });
 
-            const tvExchange = currentMarket === 'crypto_coinbase' ? 'COINBASE' : 'BINANCE';
-            const exchangeBadge = currentMarket === 'crypto_coinbase' ? 'Coinbase' : 'Binance';
+            let tvExchange = 'BINANCE';
+            let exchangeBadge = 'Binance';
+            if (currentMarket === 'crypto_coinbase') {
+                tvExchange = 'COINBASE';
+                exchangeBadge = 'Coinbase';
+            } else if (currentMarket === 'crypto_bybit') {
+                tvExchange = 'BYBIT';
+                exchangeBadge = 'Bybit';
+            } else if (currentMarket === 'crypto_mexc') {
+                tvExchange = 'MEXC';
+                exchangeBadge = 'MEXC';
+            }
             const tbody = document.getElementById('table-body');
             
             if (filtered.length === 0) {
@@ -1519,7 +1886,7 @@ DASHBOARD_HTML = """
                 const chgColor = item.change >= 0 ? 'text-emerald-400' : 'text-rose-400';
                 const chgSign = item.change >= 0 ? '+' : '';
 
-                let pairSubtitle = `${item.symbol} • ${exchangeBadge}`;
+                let pairSubtitle = `${item.symbol} • ${item.exchange || exchangeBadge}`;
                 const volBadge = item.mc_formatted 
                     ? `<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">${item.mc_formatted}</span>` 
                     : '';
@@ -1568,7 +1935,7 @@ DASHBOARD_HTML = """
                         </td>
                         <td class="py-3.5 px-4 text-center">
                             <div class="flex items-center justify-center gap-1.5">
-                                <a href="https://www.tradingview.com/chart/?symbol=${tvExchange}:${currentMarket === 'crypto_coinbase' ? `${item.clean_symbol}USD` : `${item.clean_symbol}USDT`}" target="_blank" rel="noopener" class="px-2 py-1 rounded-lg bg-navy-800 hover:bg-sky-600 hover:text-white text-slate-300 font-sans text-xs transition border border-navy-700 shadow font-semibold" title="Open TradingView">
+                                <a href="https://www.tradingview.com/chart/?symbol=${item.tv_exchange || tvExchange}:${currentMarket === 'crypto_coinbase' ? `${item.clean_symbol}USD` : `${item.clean_symbol}USDT`}" target="_blank" rel="noopener" class="px-2 py-1 rounded-lg bg-navy-800 hover:bg-sky-600 hover:text-white text-slate-300 font-sans text-xs transition border border-navy-700 shadow font-semibold" title="Open TradingView">
                                     TV ↗
                                 </a>
                                 <button onclick="openChart('${item.symbol}')" class="px-2.5 py-1 rounded-lg bg-navy-800 hover:bg-amber-500 hover:text-black text-slate-200 font-sans text-xs transition border border-navy-700 shadow font-semibold">
@@ -1717,8 +2084,9 @@ DASHBOARD_HTML = """
         function copyWatchlist() {
             if (!scanData || scanData.length === 0) return;
             const text = scanData.map(i => {
-                if (currentMarket === 'crypto_coinbase') return `COINBASE:${i.clean_symbol}USD`;
-                return `BINANCE:${i.symbol}`;
+                const ex = i.tv_exchange || (currentMarket === 'crypto_coinbase' ? 'COINBASE' : (currentMarket === 'crypto_bybit' ? 'BYBIT' : (currentMarket === 'crypto_mexc' ? 'MEXC' : 'BINANCE')));
+                const pair = currentMarket === 'crypto_coinbase' ? `${i.clean_symbol}USD` : `${i.clean_symbol}USDT`;
+                return `${ex}:${pair}`;
             }).join(', ');
             navigator.clipboard.writeText(text).then(() => {
                 const btn = document.getElementById('btn-copy-tv');
@@ -1823,6 +2191,14 @@ def api_scan():
             max_limit = 150 if is_serverless else 450
             symbols = COINBASE_MGR.get_coinbase_symbols(min_quote_vol=min_mc, max_coins=max_limit)
             workers = 25
+        elif market == "crypto_bybit":
+            max_limit = 220 if is_serverless else 450
+            symbols = BYBIT_MGR.get_bybit_symbols(min_quote_vol=min_mc, max_coins=max_limit)
+            workers = 30
+        elif market == "crypto_mexc":
+            max_limit = 160 if is_serverless else 450
+            symbols = MEXC_MGR.get_mexc_symbols(min_quote_vol=min_mc, max_coins=max_limit)
+            workers = 24
         else:
             max_limit = 320 if is_serverless else 500
             symbols = BINANCE_MGR.get_binance_symbols(min_quote_vol=min_mc, max_coins=max_limit)
@@ -1830,7 +2206,7 @@ def api_scan():
         
         results = []
         with ThreadPoolExecutor(max_workers=workers) as executor:
-            futures = [executor.submit(process_cpr_setup, sym, timeframe, mode) for sym in symbols]
+            futures = [executor.submit(process_cpr_setup, sym, timeframe, mode, market) for sym in symbols]
             for f in futures:
                 res = f.result()
                 if res:
